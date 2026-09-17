@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mirakui/pgroledef/internal/awsauth"
 	"github.com/mirakui/pgroledef/internal/catalog"
 	"github.com/mirakui/pgroledef/internal/config"
 	"github.com/mirakui/pgroledef/internal/jsonnetx"
@@ -18,11 +19,14 @@ import (
 )
 
 var (
-	flagFile    string
-	flagExtStrs []string
-	flagJPaths  []string
-	flagDSN     string
-	flagOut     string
+	flagFile        string
+	flagExtStrs     []string
+	flagJPaths      []string
+	flagDSN         string
+	flagOut         string
+	flagAuth        string
+	flagRegion      string
+	flagSSLRootCert string
 )
 
 func main() {
@@ -118,6 +122,9 @@ func main() {
 	applyCmd.Flags().BoolVar(&allowDestroy, "allow-destroy", false, "allow REVOKE / NOLOGIN statements")
 	for _, c := range []*cobra.Command{planCmd, applyCmd} {
 		c.Flags().StringVar(&flagDSN, "dsn", os.Getenv("PGROLEDEF_DSN"), "PostgreSQL connection string (default $PGROLEDEF_DSN, then libpq PG* env vars)")
+		c.Flags().StringVar(&flagAuth, "auth", "", "how to authenticate: password, rds-iam, dsql, dsql-admin (default: password on aurora-postgresql, dsql-admin on dsql)")
+		c.Flags().StringVar(&flagRegion, "region", "", "AWS region for IAM token signing (default: the AWS SDK's resolved region)")
+		c.Flags().StringVar(&flagSSLRootCert, "sslrootcert", "", "CA bundle for verify-full; Aurora needs the RDS bundle")
 	}
 
 	root.AddCommand(render, validate, planCmd, applyCmd, newVersionCmd())
@@ -155,7 +162,7 @@ func buildPlan(ctx context.Context) (*plan.Plan, catalog.Connector, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	connector, err := catalog.NewDSNConnector(flagDSN)
+	connector, err := newConnector(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,6 +171,36 @@ func buildPlan(ctx context.Context) (*plan.Plan, catalog.Connector, error) {
 		return nil, nil, err
 	}
 	return p, connector, nil
+}
+
+// newConnector picks the authentication mode. Aurora accepts a password, so it
+// stays the default there; DSQL has no passwords at all, so it defaults to an
+// admin token.
+func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, error) {
+	mode := defaultAuthMode(cfg.Target.Engine)
+	if flagAuth != "" {
+		m, err := awsauth.ParseMode(flagAuth)
+		if err != nil {
+			return nil, err
+		}
+		mode = m
+	}
+	if !mode.UsesToken() {
+		return catalog.NewDSNConnector(flagDSN)
+	}
+	return awsauth.NewConnector(ctx, awsauth.Options{
+		DSN:         flagDSN,
+		Mode:        mode,
+		Region:      flagRegion,
+		SSLRootCert: flagSSLRootCert,
+	})
+}
+
+func defaultAuthMode(engine config.Engine) awsauth.Mode {
+	if engine == config.EngineDSQL {
+		return awsauth.ModeDSQLAdmin
+	}
+	return awsauth.ModePassword
 }
 
 func writePlanSQL(cmd *cobra.Command, p *plan.Plan) error {
