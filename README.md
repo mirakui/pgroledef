@@ -15,6 +15,34 @@ against Aurora-compatible PostgreSQL, exercised in CI on PostgreSQL 16, 17 and 1
 Out of scope for now: passwords, database/schema creation, IAM policies
 (`rds-db:connect`), Aurora DSQL, dropping undeclared roles.
 
+## Install
+
+Download a prebuilt binary from the [releases page](https://github.com/mirakui/pgroledef/releases).
+Archives are published for linux and darwin on amd64 and arm64:
+
+```bash
+VERSION=0.1.0
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')          # linux | darwin
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')  # amd64 | arm64
+BASE=https://github.com/mirakui/pgroledef/releases/download/v${VERSION}
+
+curl -fsSLO ${BASE}/pgroledef_${VERSION}_${OS}_${ARCH}.tar.gz
+curl -fsSLO ${BASE}/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+
+tar xzf pgroledef_${VERSION}_${OS}_${ARCH}.tar.gz pgroledef
+install -m 0755 pgroledef /usr/local/bin/pgroledef
+```
+
+Or build from source with the Go toolchain (`go.mod` requires Go 1.27.1 or newer):
+
+```bash
+go install github.com/mirakui/pgroledef/cmd/pgroledef@latest
+```
+
+Either way, `pgroledef version` prints the version, commit and build date of the
+binary (`--version` prints the same line).
+
 ## Quick start
 
 ```bash
@@ -197,6 +225,25 @@ go test ./internal/config -update   # refresh golden files after reviewing the d
 
 Conventions and the pitfalls worth knowing before changing anything are in
 [AGENTS.md](AGENTS.md).
+
+### Release
+
+Releases are cut by pushing a SemVer tag with a `v` prefix; the `release`
+workflow then cross-compiles with [GoReleaser](https://goreleaser.com/) and
+uploads the archives and `checksums.txt` to the GitHub release.
+
+```bash
+git tag -a v0.1.0 -m v0.1.0
+git push origin v0.1.0
+```
+
+`.goreleaser.yaml` is exercised on every pull request by the `release-dryrun`
+CI job, so configuration mistakes surface before a tag is pushed. To reproduce
+that locally:
+
+```bash
+go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=publish
+```
 
 ## License
 
