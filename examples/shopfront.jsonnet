@@ -18,27 +18,28 @@ local workers = ['shopfront_worker', 'shopfront_worker_clone'];
   target: { engine: 'aurora-postgresql', identifier: env + '-shopfront' },
   policy: {},
 
-  roles: {
-    grp_shopfront_reader: {},
-    grp_shopfront_writer: { member_of: ['grp_shopfront_reader'] },
+  roles: [
+    { name: 'grp_shopfront_reader' },
+    { name: 'grp_shopfront_writer', member_of: ['grp_shopfront_reader'] },
 
     // Tables are created by the migration role, so every schema-wide grant
     // below is also turned into ALTER DEFAULT PRIVILEGES FOR ROLE shopfront_migrator.
-    shopfront_migrator: {
+    {
+      name: 'shopfront_migrator',
       login: true,
       member_of: ['grp_shopfront_writer'],
       iam: { enabled: true },
       creates_objects_in: [schema],
     },
-    shopfront_api: { login: true, member_of: ['grp_shopfront_writer'], iam: { enabled: true } },
-  } + {
+    { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer'], iam: { enabled: true } },
+  ] + [
     // Passwords are managed elsewhere (e.g. a secrets manager); pgroledef only
     // guarantees the roles exist with LOGIN.
-    [w]: { login: true }
+    { name: w, login: true }
     for w in workers
-  } + (if env == 'production' then {
-    bi_readonly: { login: true, member_of: ['grp_shopfront_reader'] },
-  } else {}),
+  ] + (if env == 'production' then [
+    { name: 'bi_readonly', login: true, member_of: ['grp_shopfront_reader'] },
+  ] else []),
 
   grants: [
     { on: { database: db }, to: 'grp_shopfront_reader', privileges: ['CONNECT'] },

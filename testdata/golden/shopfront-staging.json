@@ -19,26 +19,20 @@
       "template*"
     ]
   },
-  "roles": {
-    "grp_shopfront_reader": {
+  "roles": [
+    {
+      "name": "grp_shopfront_reader",
       "login": false
     },
-    "grp_shopfront_writer": {
+    {
+      "name": "grp_shopfront_writer",
       "login": false,
       "member_of": [
         "grp_shopfront_reader"
       ]
     },
-    "shopfront_api": {
-      "login": true,
-      "member_of": [
-        "grp_shopfront_writer"
-      ],
-      "iam": {
-        "enabled": true
-      }
-    },
-    "shopfront_migrator": {
+    {
+      "name": "shopfront_migrator",
       "login": true,
       "member_of": [
         "grp_shopfront_writer"
@@ -50,13 +44,25 @@
         "shopfront.public"
       ]
     },
-    "shopfront_worker": {
+    {
+      "name": "shopfront_api",
+      "login": true,
+      "member_of": [
+        "grp_shopfront_writer"
+      ],
+      "iam": {
+        "enabled": true
+      }
+    },
+    {
+      "name": "shopfront_worker",
       "login": true
     },
-    "shopfront_worker_clone": {
+    {
+      "name": "shopfront_worker_clone",
       "login": true
     }
-  },
+  ],
   "grants": [
     {
       "on": {

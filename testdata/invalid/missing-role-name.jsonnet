@@ -1,2 +1,2 @@
 { version: 1, target: { engine: 'aurora-postgresql', identifier: 'x' }, policy: {},
-  roles: [{ name: 'app', logn: true }], grants: [], default_privileges: [] }
+  roles: [{ login: true }], grants: [], default_privileges: [] }

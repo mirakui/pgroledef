@@ -1,2 +1,2 @@
 { version: 1, target: { engine: 'dsql', identifier: 'x' }, policy: {},
-  roles: { app: { login: true, member_of: ['rds_iam'] } }, grants: [], default_privileges: [] }
+  roles: [{ name: 'app', login: true, member_of: ['rds_iam'] }], grants: [], default_privileges: [] }

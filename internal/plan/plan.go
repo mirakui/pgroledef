@@ -195,17 +195,8 @@ type differ struct {
 }
 
 func (d *differ) managed(role string) bool {
-	_, ok := d.cfg.Roles[role]
+	_, ok := d.cfg.Role(role)
 	return ok
-}
-
-func sortedRoleNames(m map[string]config.Role) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func (d *differ) roles() error {
@@ -216,8 +207,8 @@ func (d *differ) roles() error {
 	var later []pending
 	// Pass 1: existence and login flag, so memberships in pass 2 can reference
 	// roles created in the same plan.
-	for _, name := range sortedRoleNames(d.cfg.Roles) {
-		want := d.cfg.Roles[name]
+	for _, want := range d.cfg.Roles {
+		name := want.Name
 		desiredMembers := map[string]bool{}
 		for _, m := range want.MemberOf {
 			desiredMembers[m] = true

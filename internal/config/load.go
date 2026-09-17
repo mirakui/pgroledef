@@ -33,7 +33,4 @@ func (c *Config) applyDefaults() {
 	if c.Policy.UnmanagedDatabases == nil {
 		c.Policy.UnmanagedDatabases = d.UnmanagedDatabases
 	}
-	if c.Roles == nil {
-		c.Roles = map[string]Role{}
-	}
 }

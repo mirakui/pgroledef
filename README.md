@@ -42,16 +42,18 @@ rejected by `validate` before any connection is made.
   version: 1,
   target: { engine: 'aurora-postgresql', identifier: 'staging-shopfront' },
   policy: {},   // defaults: authoritative, protected_roles, unmanaged_databases
-  roles: {
-    grp_viewer: {},
-    grp_editor: { member_of: ['grp_viewer'] },
-    migrator: {
+  roles: [
+    { name: 'grp_viewer' },
+    { name: 'grp_editor', member_of: ['grp_viewer'] },
+    {
+      name: 'migrator',
       login: true,
       member_of: ['grp_editor'],
       iam: { enabled: true },                 // Aurora: GRANT rds_iam
       creates_objects_in: ['app.public'],     // derives ALTER DEFAULT PRIVILEGES FOR ROLE migrator
     },
-  },
+    { name: 'worker', login: true },
+  ],
   grants: [
     { on: { database: 'app' },              to: 'grp_viewer', privileges: ['CONNECT'] },
     { on: { schema: 'app.public' },         to: 'grp_editor', privileges: ['USAGE', 'CREATE'] },

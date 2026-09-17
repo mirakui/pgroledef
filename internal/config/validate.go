@@ -93,14 +93,23 @@ func (v *validator) isUnmanagedDB(name string) bool {
 }
 
 func (v *validator) roleExists(name string) bool {
-	_, ok := v.cfg.Roles[name]
+	_, ok := v.cfg.Role(name)
 	return ok
 }
 
 func (v *validator) roles() {
 	c := v.cfg
-	for _, name := range sortedKeys(c.Roles) {
-		r := c.Roles[name]
+	seen := map[string]bool{}
+	for i, r := range c.Roles {
+		name := r.Name
+		if name == "" {
+			v.errf("roles[%d]: name is required", i)
+			continue
+		}
+		if seen[name] {
+			v.errf("role %q: declared more than once", name)
+		}
+		seen[name] = true
 		if !roleNameRe.MatchString(name) {
 			v.errf("role %q: name must match %s", name, roleNameRe)
 		}
@@ -258,8 +267,9 @@ func (v *validator) expandCreators() {
 		explicit[dpKey(d)] = d
 	}
 	out := append([]DefaultPrivilege(nil), v.cfg.DefaultPrivileges...)
-	for _, creator := range sortedKeys(v.cfg.Roles) {
-		for _, schema := range v.cfg.Roles[creator].CreatesObjectsIn {
+	for _, r := range v.cfg.Roles {
+		creator := r.Name
+		for _, schema := range r.CreatesObjectsIn {
 			for _, g := range v.cfg.Grants {
 				var on ObjectKind
 				switch {
@@ -307,15 +317,6 @@ func samePrivileges(a, b []Privilege) bool {
 		}
 	}
 	return true
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // IsValidationError reports whether err is a *ValidationError.

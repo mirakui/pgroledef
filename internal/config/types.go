@@ -41,7 +41,7 @@ type Config struct {
 	Version           int                `json:"version"`
 	Target            Target             `json:"target"`
 	Policy            Policy             `json:"policy"`
-	Roles             map[string]Role    `json:"roles"`
+	Roles             []Role             `json:"roles"`
 	Grants            []Grant            `json:"grants"`
 	DefaultPrivileges []DefaultPrivilege `json:"default_privileges"`
 }
@@ -58,6 +58,7 @@ type Policy struct {
 }
 
 type Role struct {
+	Name             string            `json:"name"`
 	Login            bool              `json:"login"`
 	MemberOf         []string          `json:"member_of,omitempty"`
 	IAM              *IAM              `json:"iam,omitempty"`
@@ -161,4 +162,23 @@ func (t GrantTarget) Kind() (string, string, error) {
 		return "", "", fmt.Errorf("grant target must set exactly one of database/schema/all_tables_in_schema/all_sequences_in_schema/table/sequence, got %d", n)
 	}
 	return kind, val, nil
+}
+
+// Role returns the declared role with the given name, if any.
+func (c *Config) Role(name string) (Role, bool) {
+	for _, r := range c.Roles {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return Role{}, false
+}
+
+// RoleNames returns declared role names in declaration order.
+func (c *Config) RoleNames() []string {
+	out := make([]string, 0, len(c.Roles))
+	for _, r := range c.Roles {
+		out = append(out, r.Name)
+	}
+	return out
 }

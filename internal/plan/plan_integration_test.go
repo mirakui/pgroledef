@@ -62,10 +62,10 @@ func TestReconcileRoundTrip(t *testing.T) {
 	cfg := &config.Config{
 		Version: 1,
 		Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "test"},
-		Roles: map[string]config.Role{
-			viewer: {},
-			editor: {MemberOf: []string{viewer}},
-			app:    {Login: true, MemberOf: []string{editor}, IAM: &config.IAM{Enabled: true}, CreatesObjectsIn: []string{schema}},
+		Roles: []config.Role{
+			{Name: viewer},
+			{Name: editor, MemberOf: []string{viewer}},
+			{Name: app, Login: true, MemberOf: []string{editor}, IAM: &config.IAM{Enabled: true}, CreatesObjectsIn: []string{schema}},
 		},
 		Grants: []config.Grant{
 			{On: config.GrantTarget{Database: db}, To: viewer, Privileges: []config.Privilege{config.PrivConnect}},
@@ -111,13 +111,12 @@ func TestReconcileRoundTrip(t *testing.T) {
 	// Tighten: drop the sequence grant and make app NOLOGIN -> destructive plan.
 	tight := *cfg
 	tight.Grants = cfg.Grants[:len(cfg.Grants)-1]
-	tight.Roles = map[string]config.Role{}
-	for k, v := range cfg.Roles {
-		tight.Roles[k] = v
+	tight.Roles = append([]config.Role(nil), cfg.Roles...)
+	for i := range tight.Roles {
+		if tight.Roles[i].Name == app {
+			tight.Roles[i].Login = false
+		}
 	}
-	a := tight.Roles[app]
-	a.Login = false
-	tight.Roles[app] = a
 	tightN := validate(t, &tight)
 	p = build(t, ctx, tightN, connector)
 	var sawRevoke, sawNologin bool
