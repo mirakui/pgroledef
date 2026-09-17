@@ -99,7 +99,7 @@ func main() {
 			if p.Empty() {
 				return nil
 			}
-			if hasDestructive(p) && !allowDestroy {
+			if p.NeedsAllowDestroy() && !allowDestroy {
 				return fmt.Errorf("plan contains destructive statements (REVOKE/NOLOGIN); re-run with --allow-destroy to apply them")
 			}
 			if !autoApprove {
@@ -220,15 +220,6 @@ func writePlanSQL(cmd *cobra.Command, p *plan.Plan) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "\nWrote %d statement(s) to %s\n", len(p.Statements), flagOut)
 	return nil
-}
-
-func hasDestructive(p *plan.Plan) bool {
-	for _, s := range p.Statements {
-		if s.Destructive {
-			return true
-		}
-	}
-	return false
 }
 
 func printPlan(cmd *cobra.Command, p *plan.Plan) {

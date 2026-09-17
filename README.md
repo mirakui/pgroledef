@@ -58,7 +58,9 @@ go run ./cmd/pgroledef apply    -f examples/shopfront.jsonnet --ext-str env=stag
 ```
 
 `plan` exits 2 when there is a diff, 0 when the database already matches.
-`apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is given.
+`apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is
+given. The one exception is a statement that gives back a membership pgroledef
+borrowed itself; see [Aurora DSQL](#aurora-dsql).
 
 ### Writing the plan to a SQL file
 
@@ -168,15 +170,24 @@ needs an inheriting membership in the creator role, so `apply` borrows one and
 hands it straight back. Where that pair is not atomic, a failure in between
 leaves the borrow in place — and nothing would otherwise notice, because the
 next `plan` would see the membership and decide no borrow is needed. `plan`
-therefore proposes handing a leftover borrow back, as a destructive statement:
+therefore proposes handing a leftover borrow back:
 
 ```
 - REVOKE INHERIT OPTION FOR "shopfront_migrator" FROM CURRENT_USER;  -- membership borrowed by an earlier apply and never returned
 ```
 
-If you granted the executing user that membership on purpose, declare the
-privileges it carries instead; pgroledef treats an inheriting membership in a
-creator role as its own.
+It reads as destructive, because it is a revoke, but it does **not** need
+`--allow-destroy`: recovering from a half-applied run would otherwise also have
+to unlock every other revoke in the plan, which is the opposite of what you
+want at that moment.
+
+More generally, the executing user is normally in `policy.protected_roles`, so
+its own memberships are not declared anywhere — which makes any inheriting
+membership it holds in a managed role undeclared, and pgroledef proposes
+returning it. When no default privilege in the plan still relies on it, that
+one runs at cluster level and does need `--allow-destroy`, since it cannot be
+attributed to a borrow. If you granted it on purpose, declare the privileges it
+carries instead of relying on the membership.
 
 A role's IAM mapping has to be revoked before the role can be dropped, which
 matters if you remove a role by hand — DSQL reports it as

@@ -120,61 +120,125 @@ func TestCreatorMembershipNeedsInherit(t *testing.T) {
 }
 
 // TestStaleBorrowIsReleased pins the convergence promise where apply is not
-// atomic: a borrow a failed run left behind must be handed back, because
-// nothing else would ever notice it.
+// atomic: an inheriting membership the executing user holds in a managed role
+// without the declaration asking for it must be handed back, because nothing
+// else would ever notice it.
 func TestStaleBorrowIsReleased(t *testing.T) {
-	cfg := &config.Config{
-		Version: 1,
-		Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "staging"},
-		Policy:  config.DefaultPolicy(),
-		Roles: []config.Role{
-			{Name: "grp_viewer", Grants: []config.RoleGrant{
-				{On: config.GrantTarget{AllTablesInSchema: "app.public"}, Privileges: []config.Privilege{config.PrivSelect}},
-			}},
-			{Name: "migrator", Login: true, CreatesObjectsIn: []string{"app.public"}},
+	cases := []struct {
+		name string
+		// creates is the creator's creates_objects_in; dropping it removes the
+		// creator from the default-privilege keys entirely.
+		creates []string
+		// inherits is what the executing user already inherits.
+		inherits []string
+		// defaultACL seeds pg_default_acl for the creator.
+		defaultACL bool
+
+		wantRelease  bool
+		wantDatabase string
+		wantReclaim  bool
+	}{
+		{
+			// A borrow a failed apply left behind: the default privileges
+			// still rely on it, so the release follows them and only gives
+			// back what pgroledef took.
+			name:    "borrow left behind by an earlier apply",
+			creates: []string{"app.public"}, inherits: []string{"migrator"}, defaultACL: true,
+			wantRelease: true, wantDatabase: "app", wantReclaim: true,
+		},
+		{
+			// The declaration no longer names the creator, so nothing in the
+			// plan relies on the membership and it is not attributable to a
+			// borrow: cluster-level, and gated by --allow-destroy.
+			name:        "creator no longer creates objects",
+			inherits:    []string{"migrator"},
+			wantRelease: true, wantDatabase: "", wantReclaim: false,
+		},
+		{
+			// Aurora grants the master an inheriting membership in
+			// rds_superuser. It is not declared, so it is not ours to touch.
+			name:     "membership in an undeclared role is left alone",
+			inherits: []string{"rds_superuser"},
 		},
 	}
-	normalized, err := config.Validate(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := &catalog.State{
-		CurrentUser: "master",
-		Roles: map[string]*catalog.Role{
-			"master": {Name: "master", Login: true, MemberOf: map[string]bool{"migrator": true},
-				InheritsFrom: map[string]bool{"migrator": true}},
-			"grp_viewer": {Name: "grp_viewer", MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}},
-			"migrator":   {Name: "migrator", Login: true, MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}},
-		},
-		Databases: map[string]*catalog.Database{
-			"app": {Name: "app", Owner: "master", AllowConn: true, ACL: catalog.ACL{},
-				Schemas: map[string]*catalog.Schema{
-					"public": {Name: "public", Owner: "master", ACL: catalog.ACL{},
-						Relations: map[string]*catalog.Relation{},
-						DefaultACL: map[catalog.DefaultACLKey]catalog.ACL{
-							{ForRole: "migrator", ObjType: "tables"}: {"grp_viewer": catalog.PrivSet{"SELECT": true}},
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Version: 1,
+				Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "staging"},
+				Policy:  config.DefaultPolicy(),
+				Roles: []config.Role{
+					{Name: "grp_viewer", Grants: []config.RoleGrant{
+						{On: config.GrantTarget{AllTablesInSchema: "app.public"}, Privileges: []config.Privilege{config.PrivSelect}},
+					}},
+					{Name: "migrator", Login: true, CreatesObjectsIn: c.creates},
+				},
+			}
+			normalized, err := config.Validate(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			me := &catalog.Role{Name: "master", Login: true, MemberOf: map[string]bool{},
+				InheritsFrom: map[string]bool{}}
+			for _, r := range c.inherits {
+				me.MemberOf[r] = true
+				me.InheritsFrom[r] = true
+			}
+			defaultACL := map[catalog.DefaultACLKey]catalog.ACL{}
+			if c.defaultACL {
+				defaultACL[catalog.DefaultACLKey{ForRole: "migrator", ObjType: "tables"}] =
+					catalog.ACL{"grp_viewer": catalog.PrivSet{"SELECT": true}}
+			}
+			st := &catalog.State{
+				CurrentUser: "master",
+				Roles: map[string]*catalog.Role{
+					"master":        me,
+					"rds_superuser": {Name: "rds_superuser", MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}},
+					"grp_viewer":    {Name: "grp_viewer", MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}},
+					"migrator":      {Name: "migrator", Login: true, MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}},
+				},
+				Databases: map[string]*catalog.Database{
+					"app": {Name: "app", Owner: "master", AllowConn: true, ACL: catalog.ACL{},
+						Schemas: map[string]*catalog.Schema{
+							"public": {Name: "public", Owner: "master", ACL: catalog.ACL{},
+								Relations:  map[string]*catalog.Relation{},
+								DefaultACL: defaultACL},
 						}},
-				}},
-		},
-	}
-	p, err := plan.Diff(normalized, st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The default privileges already match, so the release is the only change.
-	var found *plan.Statement
-	for i, s := range p.Statements {
-		if strings.HasPrefix(s.SQL, "REVOKE INHERIT OPTION FOR") {
-			found = &p.Statements[i]
-		}
-	}
-	if found == nil {
-		t.Fatalf("the leftover membership was not released; statements: %v", p.Statements)
-	}
-	if !found.Destructive {
-		t.Fatal("releasing a membership is destructive and must need --allow-destroy")
-	}
-	if found.Database != "app" {
-		t.Fatalf("release ran in %q, want the database whose default privileges used it", found.Database)
+				},
+			}
+			p, err := plan.Diff(normalized, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found *plan.Statement
+			for i, s := range p.Statements {
+				if strings.HasPrefix(s.SQL, "REVOKE INHERIT OPTION FOR") {
+					found = &p.Statements[i]
+				}
+			}
+			if !c.wantRelease {
+				if found != nil {
+					t.Fatalf("released a membership it does not own: %q", found.SQL)
+				}
+				return
+			}
+			if found == nil {
+				t.Fatalf("the membership was not released; statements: %v", p.Statements)
+			}
+			if !found.Destructive {
+				t.Fatal("a revoke has to read as destructive")
+			}
+			if found.Database != c.wantDatabase {
+				t.Fatalf("release ran in %q, want %q", found.Database, c.wantDatabase)
+			}
+			if found.Reclaim != c.wantReclaim {
+				t.Fatalf("Reclaim = %t, want %t", found.Reclaim, c.wantReclaim)
+			}
+			// Recovering from a half-applied run must not also unlock every
+			// other revoke in the plan.
+			if got := p.NeedsAllowDestroy(); got == c.wantReclaim {
+				t.Fatalf("NeedsAllowDestroy() = %t with Reclaim = %t", got, c.wantReclaim)
+			}
+		})
 	}
 }

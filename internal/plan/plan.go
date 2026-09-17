@@ -23,7 +23,13 @@ type Statement struct {
 	Database    string
 	SQL         string
 	Destructive bool // REVOKE / DROP / removes access
-	Note        string
+	// Reclaim marks a statement that only gives back something pgroledef
+	// itself borrowed. It is still a REVOKE, so it reads as destructive, but
+	// it takes away nothing that was declared and so does not need
+	// --allow-destroy: requiring it would mean recovering from a half-applied
+	// run also unlocks every other REVOKE in the plan.
+	Reclaim bool
+	Note    string
 }
 
 // Plan is the ordered set of statements grouped by the database they run in.
@@ -40,6 +46,16 @@ func (p *Plan) Empty() bool { return len(p.Statements) == 0 }
 
 func (p *Plan) add(db, sql string, destructive bool, note string) {
 	p.Statements = append(p.Statements, Statement{Database: db, SQL: sql, Destructive: destructive, Note: note})
+}
+
+// NeedsAllowDestroy reports whether applying the plan requires --allow-destroy.
+func (p *Plan) NeedsAllowDestroy() bool {
+	for _, s := range p.Statements {
+		if s.Destructive && !s.Reclaim {
+			return true
+		}
+	}
+	return false
 }
 
 // Databases returns the distinct databases touched, "" first, then sorted.
@@ -740,34 +756,55 @@ func (d *differ) undoBorrow(creator string) string {
 	return fmt.Sprintf("REVOKE %s FROM CURRENT_USER", ident(creator))
 }
 
-// releaseStaleBorrows returns an inheriting membership a previous apply took
-// but never gave back. Where apply is not atomic a failure between the borrow
-// and its undo leaves one behind, and nothing else would ever notice: the next
-// plan sees the membership, decides no borrow is needed, and so never emits
-// the undo either. The statements above still rely on the membership, so this
-// runs after them, in the last database that used it.
+// releaseStaleBorrows returns an inheriting membership the executing user holds
+// in a managed role without the declaration asking for it. The usual cause is a
+// borrow a previous apply took and never gave back, which where apply is not
+// atomic nothing else would ever notice: the next plan sees the membership,
+// decides no borrow is needed, and so never emits the undo either.
+//
+// The executing user is normally protected, so its own memberships are not
+// declared anywhere; an inheriting one in a managed role is therefore always
+// undeclared. When the plan still has default-privilege statements relying on
+// the membership, the release runs after them, in the last database that used
+// it, and counts as giving back a borrow. Otherwise nothing relies on it, the
+// release is cluster-level, and it needs --allow-destroy like any other revoke
+// of something pgroledef did not grant itself.
 func (d *differ) releaseStaleBorrows(keys []defaultKey) {
 	me := d.st.Roles[d.st.CurrentUser]
-	if me == nil || me.Super {
+	// A declared executing user has its memberships reconciled by roles().
+	if me == nil || me.Super || d.managed(d.st.CurrentUser) {
 		return
 	}
 	last := map[string]string{}
 	for _, k := range keys {
-		if k.ForRole == d.st.CurrentUser || !me.InheritsFrom[k.ForRole] {
+		if !me.InheritsFrom[k.ForRole] {
 			continue
 		}
 		if db, seen := last[k.ForRole]; !seen || k.Database > db {
 			last[k.ForRole] = k.Database
 		}
 	}
-	creators := make([]string, 0, len(last))
-	for creator := range last {
+	creators := make([]string, 0, len(me.InheritsFrom))
+	for creator := range me.InheritsFrom {
+		if creator == d.st.CurrentUser || !d.managed(creator) {
+			continue
+		}
 		creators = append(creators, creator)
 	}
 	sort.Strings(creators)
 	for _, creator := range creators {
-		d.p.add(last[creator], fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(creator)), true,
-			"membership borrowed by an earlier apply and never returned")
+		db, borrowed := last[creator]
+		note := "undeclared inheriting membership in a managed role"
+		if borrowed {
+			note = "membership borrowed by an earlier apply and never returned"
+		}
+		d.p.Statements = append(d.p.Statements, Statement{
+			Database:    db,
+			SQL:         fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(creator)),
+			Destructive: true,
+			Reclaim:     borrowed,
+			Note:        note,
+		})
 	}
 }
 
