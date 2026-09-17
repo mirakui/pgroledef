@@ -1,0 +1,15 @@
+[tools]
+go = "1.27.1"
+golangci-lint = "latest"
+
+[tasks.test]
+run = "go test ./..."
+
+[tasks.lint]
+run = "golangci-lint run ./..."
+
+[tasks."db:up"]
+run = "docker compose up -d --wait"
+
+[tasks."db:down"]
+run = "docker compose down -v"

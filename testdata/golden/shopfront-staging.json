@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "target": {
+    "engine": "aurora-postgresql",
+    "identifier": "staging-shopfront"
+  },
+  "policy": {
+    "authoritative": true,
+    "protected_roles": [
+      "postgres",
+      "rdsadmin",
+      "rds_*",
+      "pg_*",
+      "admin"
+    ],
+    "unmanaged_databases": [
+      "postgres",
+      "rdsadmin",
+      "template*"
+    ]
+  },
+  "roles": {
+    "grp_shopfront_reader": {
+      "login": false
+    },
+    "grp_shopfront_writer": {
+      "login": false,
+      "member_of": [
+        "grp_shopfront_reader"
+      ]
+    },
+    "shopfront_api": {
+      "login": true,
+      "member_of": [
+        "grp_shopfront_writer"
+      ],
+      "iam": {
+        "enabled": true
+      }
+    },
+    "shopfront_migrator": {
+      "login": true,
+      "member_of": [
+        "grp_shopfront_writer"
+      ],
+      "iam": {
+        "enabled": true
+      },
+      "creates_objects_in": [
+        "shopfront.public"
+      ]
+    },
+    "shopfront_worker": {
+      "login": true
+    },
+    "shopfront_worker_clone": {
+      "login": true
+    }
+  },
+  "grants": [
+    {
+      "on": {
+        "database": "shopfront"
+      },
+      "to": "grp_shopfront_reader",
+      "privileges": [
+        "CONNECT"
+      ]
+    },
+    {
+      "on": {
+        "schema": "shopfront.public"
+      },
+      "to": "grp_shopfront_reader",
+      "privileges": [
+        "USAGE"
+      ]
+    },
+    {
+      "on": {
+        "schema": "shopfront.public"
+      },
+      "to": "grp_shopfront_writer",
+      "privileges": [
+        "USAGE",
+        "CREATE"
+      ]
+    },
+    {
+      "on": {
+        "all_tables_in_schema": "shopfront.public"
+      },
+      "to": "grp_shopfront_reader",
+      "privileges": [
+        "SELECT"
+      ]
+    },
+    {
+      "on": {
+        "all_tables_in_schema": "shopfront.public"
+      },
+      "to": "grp_shopfront_writer",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ]
+    },
+    {
+      "on": {
+        "all_sequences_in_schema": "shopfront.public"
+      },
+      "to": "grp_shopfront_writer",
+      "privileges": [
+        "USAGE",
+        "SELECT"
+      ]
+    },
+    {
+      "on": {
+        "database": "shopfront"
+      },
+      "to": "shopfront_worker",
+      "privileges": [
+        "CONNECT"
+      ]
+    },
+    {
+      "on": {
+        "schema": "shopfront.public"
+      },
+      "to": "shopfront_worker",
+      "privileges": [
+        "USAGE"
+      ]
+    },
+    {
+      "on": {
+        "table": "shopfront.public.job_queue"
+      },
+      "to": "shopfront_worker",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ]
+    },
+    {
+      "on": {
+        "database": "shopfront"
+      },
+      "to": "shopfront_worker_clone",
+      "privileges": [
+        "CONNECT"
+      ]
+    },
+    {
+      "on": {
+        "schema": "shopfront.public"
+      },
+      "to": "shopfront_worker_clone",
+      "privileges": [
+        "USAGE"
+      ]
+    },
+    {
+      "on": {
+        "table": "shopfront.public.job_queue"
+      },
+      "to": "shopfront_worker_clone",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ]
+    }
+  ],
+  "default_privileges": [
+    {
+      "for_role": "shopfront_migrator",
+      "in_schema": "shopfront.public",
+      "on": "sequences",
+      "to": "grp_shopfront_writer",
+      "privileges": [
+        "USAGE",
+        "SELECT"
+      ]
+    },
+    {
+      "for_role": "shopfront_migrator",
+      "in_schema": "shopfront.public",
+      "on": "tables",
+      "to": "grp_shopfront_reader",
+      "privileges": [
+        "SELECT"
+      ]
+    },
+    {
+      "for_role": "shopfront_migrator",
+      "in_schema": "shopfront.public",
+      "on": "tables",
+      "to": "grp_shopfront_writer",
+      "privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ]
+    }
+  ]
+}
