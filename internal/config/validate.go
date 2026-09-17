@@ -23,6 +23,7 @@ var privilegesByKind = map[string]map[Privilege]bool{
 	"tables": {
 		PrivSelect: true, PrivInsert: true, PrivUpdate: true, PrivDelete: true,
 		PrivTruncate: true, PrivReferences: true, PrivTrigger: true,
+		PrivMaintain: true,
 	},
 	"sequences": {PrivUsage: true, PrivSelect: true, PrivUpdate: true},
 }
@@ -67,6 +68,14 @@ func (v *validator) run() {
 	}
 	if c.Target.Identifier == "" {
 		v.errf("target.identifier is required")
+	}
+	if pv := c.Target.PostgresVersion; pv != 0 {
+		switch {
+		case c.Target.Engine == EngineDSQL:
+			v.errf("target.postgres_version is aurora-postgresql-only; dsql has no major version to declare")
+		case !IsSupportedMajor(pv):
+			v.errf("target.postgres_version must be one of %v, got %d", SupportedMajors, pv)
+		}
 	}
 	v.roles()
 	v.grants()
@@ -165,6 +174,12 @@ func (v *validator) checkPrivileges(ctx string, kind string, privs []Privilege) 
 		}
 		if allowed := privilegesByKind[kind]; allowed != nil && !allowed[p] {
 			v.errf("%s: privilege %q is not applicable to %s", ctx, p, kind)
+		}
+		// Without a declared version the check is deferred to plan/apply,
+		// which knows the server's major version.
+		if pv := v.cfg.Target.PostgresVersion; pv != 0 && PrivilegeMinMajor(p) > pv {
+			v.errf("%s: privilege %q requires PostgreSQL %d or later, but target.postgres_version is %d",
+				ctx, p, PrivilegeMinMajor(p), pv)
 		}
 		if seen[p] {
 			v.errf("%s: duplicate privilege %q", ctx, p)

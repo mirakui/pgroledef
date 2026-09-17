@@ -10,7 +10,7 @@ Think `psqldef` for roles: schema is psqldef's job, roles are pgroledef's.
 ## Status
 
 Early development. Current milestone: `render` / `validate` / `plan` / `apply`
-against Aurora-compatible PostgreSQL, exercised locally on PostgreSQL 17.
+against Aurora-compatible PostgreSQL, exercised in CI on PostgreSQL 16, 17 and 18.
 
 Out of scope for now: passwords, database/schema creation, IAM policies
 (`rds-db:connect`), Aurora DSQL, dropping undeclared roles.
@@ -19,8 +19,8 @@ Out of scope for now: passwords, database/schema creation, IAM policies
 
 ```bash
 mise install
-mise run db:up                                   # PostgreSQL 17 with an Aurora-like fixture
-export PGROLEDEF_DSN=postgres://postgres:postgres@localhost:55439/postgres
+mise run db:up                                   # PostgreSQL 16, 17 and 18 with an Aurora-like fixture
+export PGROLEDEF_DSN=postgres://postgres:postgres@localhost:55417/postgres
 
 go run ./cmd/pgroledef validate -f examples/shopfront.jsonnet --ext-str env=staging
 go run ./cmd/pgroledef render   -f examples/shopfront.jsonnet --ext-str env=staging
@@ -30,6 +30,25 @@ go run ./cmd/pgroledef apply    -f examples/shopfront.jsonnet --ext-str env=stag
 
 `plan` exits 2 when there is a diff, 0 when the database already matches.
 `apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is given.
+
+## Supported PostgreSQL versions
+
+PostgreSQL 16, 17 and 18 (and the Aurora PostgreSQL versions based on them).
+`plan` and `apply` read `server_version_num` and refuse anything older than 16.
+
+A declaration may pin the major version it was written for:
+
+```jsonnet
+target: { engine: 'aurora-postgresql', identifier: 'staging-shopfront', postgres_version: 17 },
+```
+
+When pinned, `validate` rejects — offline, without a connection — privileges the
+version does not have, and `plan` / `apply` refuse a server whose major version
+differs. When omitted, the same checks run at `plan` / `apply` time against the
+version the server reports.
+
+The only privilege that currently differs between the supported versions is
+`MAINTAIN` on tables, which PostgreSQL 17 introduced.
 
 ## Declaration format
 
@@ -105,8 +124,9 @@ on the server but are not declared are not touched (yet).
 ## Development
 
 ```bash
-mise run db:up
-PGROLEDEF_TEST_DSN=postgres://postgres:postgres@localhost:55439/postgres mise run test
+mise run db:up                # pg16, pg17, pg18 on ports 55416 / 55417 / 55418
+mise run test:17              # tests against one version (also test:16, test:18)
+mise run test:all             # tests against all three
 mise run lint
 go test ./internal/config -update   # refresh golden files after reviewing the diff
 ```

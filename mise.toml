@@ -3,13 +3,37 @@ go = "1.27.1"
 golangci-lint = "latest"
 
 [tasks.test]
+description = "Unit tests (integration tests skip unless PGROLEDEF_TEST_DSN is set)"
 run = "go test ./..."
 
 [tasks.lint]
 run = "golangci-lint run ./..."
 
 [tasks."db:up"]
+description = "Start PostgreSQL 16, 17 and 18"
 run = "docker compose up -d --wait"
+
+[tasks."db:up:16"]
+run = "docker compose up -d --wait pg16"
+
+[tasks."db:up:17"]
+run = "docker compose up -d --wait pg17"
+
+[tasks."db:up:18"]
+run = "docker compose up -d --wait pg18"
 
 [tasks."db:down"]
 run = "docker compose down -v"
+
+[tasks."test:16"]
+run = "PGROLEDEF_TEST_DSN=postgres://postgres:postgres@localhost:55416/postgres go test ./..."
+
+[tasks."test:17"]
+run = "PGROLEDEF_TEST_DSN=postgres://postgres:postgres@localhost:55417/postgres go test ./..."
+
+[tasks."test:18"]
+run = "PGROLEDEF_TEST_DSN=postgres://postgres:postgres@localhost:55418/postgres go test ./..."
+
+[tasks."test:all"]
+description = "Run the tests against every supported major version"
+depends = ["test:16", "test:17", "test:18"]

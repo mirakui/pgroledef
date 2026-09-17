@@ -1,16 +1,31 @@
+# One container per supported major version, so the same declaration can be
+# exercised against all of them. Port = 554<major>.
+x-pg: &pg
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: postgres
+  volumes:
+    - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 2s
+    timeout: 2s
+    retries: 15
+
 services:
-  db:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+  pg16:
+    <<: *pg
+    image: postgres:16
     ports:
-      - "55439:5432"
-    volumes:
-      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 2s
-      timeout: 2s
-      retries: 15
+      - "55416:5432"
+  pg17:
+    <<: *pg
+    image: postgres:17
+    ports:
+      - "55417:5432"
+  pg18:
+    <<: *pg
+    image: postgres:18
+    ports:
+      - "55418:5432"

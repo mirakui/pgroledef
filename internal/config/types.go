@@ -28,12 +28,48 @@ const (
 	PrivCreate     Privilege = "CREATE"
 	PrivConnect    Privilege = "CONNECT"
 	PrivTemp       Privilege = "TEMPORARY"
+	PrivMaintain   Privilege = "MAINTAIN" // PostgreSQL 17+
 )
 
 var allPrivileges = map[Privilege]bool{
 	PrivSelect: true, PrivInsert: true, PrivUpdate: true, PrivDelete: true,
 	PrivTruncate: true, PrivReferences: true, PrivTrigger: true,
 	PrivUsage: true, PrivCreate: true, PrivConnect: true, PrivTemp: true,
+	PrivMaintain: true,
+}
+
+// Supported PostgreSQL major versions. Aurora PostgreSQL tracks community
+// PostgreSQL closely enough that the catalogs and grant syntax pgroledef uses
+// are identical across these majors; only the privilege set differs.
+const (
+	MinMajor = 16
+	MaxMajor = 18
+)
+
+// SupportedMajors lists the majors target.postgres_version may declare.
+var SupportedMajors = []int{16, 17, 18}
+
+// privilegeMinMajor records privileges that do not exist in every supported
+// major. MAINTAIN was introduced in PostgreSQL 17.
+var privilegeMinMajor = map[Privilege]int{PrivMaintain: 17}
+
+// PrivilegeMinMajor returns the first PostgreSQL major version that knows the
+// privilege (MinMajor when it has always existed).
+func PrivilegeMinMajor(p Privilege) int {
+	if v, ok := privilegeMinMajor[p]; ok {
+		return v
+	}
+	return MinMajor
+}
+
+// IsSupportedMajor reports whether the major version may be declared.
+func IsSupportedMajor(major int) bool {
+	for _, v := range SupportedMajors {
+		if v == major {
+			return true
+		}
+	}
+	return false
 }
 
 // Config is the canonical document. Field names are the JSON wire format.
@@ -47,6 +83,10 @@ type Config struct {
 type Target struct {
 	Engine     Engine `json:"engine"`
 	Identifier string `json:"identifier"`
+	// PostgresVersion is the major version of the target server (16, 17, 18).
+	// Optional: when set, validate rejects declarations the version cannot
+	// express, and plan/apply refuse a server whose major version differs.
+	PostgresVersion int `json:"postgres_version,omitempty"`
 }
 
 type Policy struct {
