@@ -61,14 +61,10 @@ type Role struct {
 	Name             string            `json:"name"`
 	Login            bool              `json:"login"`
 	MemberOf         []string          `json:"member_of,omitempty"`
-	IAM              *IAM              `json:"iam,omitempty"`
+	IAM              bool              `json:"iam"`
+	IAMPrincipals    []string          `json:"iam_principals,omitempty"`
 	Settings         map[string]string `json:"settings,omitempty"`
 	CreatesObjectsIn []string          `json:"creates_objects_in,omitempty"`
-}
-
-type IAM struct {
-	Enabled    bool     `json:"enabled"`
-	Principals []string `json:"principals,omitempty"`
 }
 
 // GrantTarget is a tagged union: exactly one field must be set.

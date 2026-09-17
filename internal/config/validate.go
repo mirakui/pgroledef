@@ -128,26 +128,26 @@ func (v *validator) roles() {
 				v.errf("role %q: cannot be a member of itself", name)
 			}
 		}
-		if r.IAM != nil {
-			if !r.IAM.Enabled {
-				v.errf("role %q: iam.enabled must be true when iam is set (omit iam to disable)", name)
+		for _, p := range r.IAMPrincipals {
+			if !iamArnRe.MatchString(p) {
+				v.errf("role %q: iam_principals entry %q is not an IAM role ARN", name, p)
 			}
-			for _, p := range r.IAM.Principals {
-				if !iamArnRe.MatchString(p) {
-					v.errf("role %q: iam.principals entry %q is not an IAM role ARN", name, p)
-				}
-			}
+		}
+		if !r.IAM && len(r.IAMPrincipals) > 0 {
+			v.errf("role %q: iam_principals requires iam: true", name)
+		}
+		if r.IAM && !r.Login {
+			v.errf("role %q: iam: true requires login: true (IAM authentication is for login roles)", name)
+		}
+		if r.IAM {
 			switch c.Target.Engine {
 			case EngineDSQL:
-				if len(r.IAM.Principals) == 0 {
-					v.errf("role %q: dsql requires at least one iam.principals entry (AWS IAM GRANT target)", name)
-				}
-				if !r.Login {
-					v.errf("role %q: dsql iam mapping requires login: true", name)
+				if len(r.IAMPrincipals) == 0 {
+					v.errf("role %q: dsql requires at least one iam_principals entry (AWS IAM GRANT target)", name)
 				}
 			case EngineAuroraPostgres:
-				if len(r.IAM.Principals) > 0 {
-					v.errf("role %q: iam.principals must be empty on aurora-postgresql (rds-db:connect is managed in IAM/Terraform)", name)
+				if len(r.IAMPrincipals) > 0 {
+					v.errf("role %q: iam_principals must be empty on aurora-postgresql (rds-db:connect is managed in IAM/Terraform)", name)
 				}
 			}
 		}

@@ -49,7 +49,7 @@ rejected by `validate` before any connection is made.
       name: 'migrator',
       login: true,
       member_of: ['grp_editor'],
-      iam: { enabled: true },                 // Aurora: GRANT rds_iam
+      iam: true,                              // Aurora: GRANT rds_iam; DSQL adds iam_principals: [arn]
       creates_objects_in: ['app.public'],     // derives ALTER DEFAULT PRIVILEGES FOR ROLE migrator
     },
     { name: 'worker', login: true },
@@ -79,7 +79,7 @@ mistake cannot be expressed.
 For every role declared in the file:
 
 - existence and `LOGIN` / `NOLOGIN`
-- role memberships (`GRANT role TO role`), including `rds_iam` when `iam.enabled`
+- role memberships (`GRANT role TO role`), including `rds_iam` when `iam: true`
 - privileges on databases, schemas, tables and sequences, in every database
   not matched by `policy.unmanaged_databases`; undeclared privileges are revoked
 - default privileges where the declared role is the creator or the grantee

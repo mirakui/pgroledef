@@ -213,9 +213,9 @@ func (d *differ) roles() error {
 		for _, m := range want.MemberOf {
 			desiredMembers[m] = true
 		}
-		if want.IAM != nil && want.IAM.Enabled {
+		if want.IAM {
 			if d.st.Roles["rds_iam"] == nil {
-				return fmt.Errorf("role %q: iam.enabled requires the rds_iam role, which does not exist on this server", name)
+				return fmt.Errorf("role %q: iam: true requires the rds_iam role, which does not exist on this server", name)
 			}
 			desiredMembers["rds_iam"] = true
 		}

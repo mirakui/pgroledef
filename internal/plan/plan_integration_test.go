@@ -65,7 +65,7 @@ func TestReconcileRoundTrip(t *testing.T) {
 		Roles: []config.Role{
 			{Name: viewer},
 			{Name: editor, MemberOf: []string{viewer}},
-			{Name: app, Login: true, MemberOf: []string{editor}, IAM: &config.IAM{Enabled: true}, CreatesObjectsIn: []string{schema}},
+			{Name: app, Login: true, MemberOf: []string{editor}, IAM: true, CreatesObjectsIn: []string{schema}},
 		},
 		Grants: []config.Grant{
 			{On: config.GrantTarget{Database: db}, To: viewer, Privileges: []config.Privilege{config.PrivConnect}},
@@ -108,27 +108,29 @@ func TestReconcileRoundTrip(t *testing.T) {
 		t.Fatalf("default privileges did not cover a table created by the creator role:\n%s", dump(p))
 	}
 
-	// Tighten: drop the sequence grant and make app NOLOGIN -> destructive plan.
+	// Tighten: drop the sequence grant, make app NOLOGIN and drop IAM auth -> destructive plan.
 	tight := *cfg
 	tight.Grants = cfg.Grants[:len(cfg.Grants)-1]
 	tight.Roles = append([]config.Role(nil), cfg.Roles...)
 	for i := range tight.Roles {
 		if tight.Roles[i].Name == app {
 			tight.Roles[i].Login = false
+			tight.Roles[i].IAM = false
 		}
 	}
 	tightN := validate(t, &tight)
 	p = build(t, ctx, tightN, connector)
-	var sawRevoke, sawNologin bool
+	var sawRevoke, sawNologin, sawIAM bool
 	for _, s := range p.Statements {
 		if !s.Destructive {
 			t.Fatalf("tightened plan should only revoke, got: %s", s.SQL)
 		}
 		sawRevoke = sawRevoke || strings.HasPrefix(s.SQL, "REVOKE") || strings.Contains(s.SQL, " REVOKE ")
 		sawNologin = sawNologin || strings.Contains(s.SQL, "NOLOGIN")
+		sawIAM = sawIAM || strings.Contains(s.SQL, `REVOKE "rds_iam"`)
 	}
-	if !sawRevoke || !sawNologin {
-		t.Fatalf("expected REVOKE and NOLOGIN statements, got:\n%s", dump(p))
+	if !sawRevoke || !sawNologin || !sawIAM {
+		t.Fatalf("expected REVOKE, NOLOGIN and REVOKE rds_iam statements, got:\n%s", dump(p))
 	}
 	if err := plan.Apply(ctx, p, connector, io.Discard); err != nil {
 		t.Fatal(err)

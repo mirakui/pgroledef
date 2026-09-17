@@ -28,10 +28,10 @@ local workers = ['shopfront_worker', 'shopfront_worker_clone'];
       name: 'shopfront_migrator',
       login: true,
       member_of: ['grp_shopfront_writer'],
-      iam: { enabled: true },
+      iam: true,
       creates_objects_in: [schema],
     },
-    { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer'], iam: { enabled: true } },
+    { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer'], iam: true },
   ] + [
     // Passwords are managed elsewhere (e.g. a secrets manager); pgroledef only
     // guarantees the roles exist with LOGIN.
