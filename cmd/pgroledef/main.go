@@ -22,6 +22,7 @@ var (
 	flagExtStrs []string
 	flagJPaths  []string
 	flagDSN     string
+	flagOut     string
 )
 
 func main() {
@@ -70,6 +71,9 @@ func main() {
 				return err
 			}
 			printPlan(cmd, p)
+			if err := writePlanSQL(cmd, p); err != nil {
+				return err
+			}
 			if !p.Empty() {
 				os.Exit(2)
 			}
@@ -107,6 +111,7 @@ func main() {
 			return nil
 		},
 	}
+	planCmd.Flags().StringVarP(&flagOut, "out", "o", "", "also write the plan to this file as an executable SQL script")
 	applyCmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "skip the confirmation prompt")
 	applyCmd.Flags().BoolVar(&allowDestroy, "allow-destroy", false, "allow REVOKE / NOLOGIN statements")
 	for _, c := range []*cobra.Command{planCmd, applyCmd} {
@@ -157,6 +162,25 @@ func buildPlan(ctx context.Context) (*plan.Plan, catalog.Connector, error) {
 		return nil, nil, err
 	}
 	return p, connector, nil
+}
+
+func writePlanSQL(cmd *cobra.Command, p *plan.Plan) error {
+	if flagOut == "" {
+		return nil
+	}
+	f, err := os.Create(flagOut)
+	if err != nil {
+		return err
+	}
+	if err := plan.WriteSQL(p, f); err != nil {
+		f.Close() //nolint:errcheck // the write error is the one worth reporting
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "\nWrote %d statement(s) to %s\n", len(p.Statements), flagOut)
+	return nil
 }
 
 func hasDestructive(p *plan.Plan) bool {
