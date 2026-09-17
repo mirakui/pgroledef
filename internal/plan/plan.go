@@ -101,7 +101,9 @@ func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector)
 		}
 		dconn, err := connector.Connect(ctx, name)
 		if err != nil {
-			return nil, err
+			// Aurora keeps databases the master cannot connect to, and a
+			// managed database that cannot be read cannot be reconciled.
+			return nil, fmt.Errorf("%w\nadd %q to policy.unmanaged_databases if it is not meant to be managed", err, name)
 		}
 		err = catalog.ReadDatabase(ctx, dconn, db)
 		dconn.Close(ctx)

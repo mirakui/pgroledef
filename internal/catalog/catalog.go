@@ -158,7 +158,7 @@ func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 			SELECT COALESCE(pg_get_userbyid(x.grantee), '') AS grantee, x.privilege_type
 			FROM aclexplode(d.datacl) x WHERE x.grantee <> 0
 		) a ON true
-		WHERE NOT d.datistemplate`)
+		WHERE NOT d.datistemplate AND d.datallowconn`)
 	if err != nil {
 		return nil, fmt.Errorf("read pg_database: %w", err)
 	}
