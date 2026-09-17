@@ -43,6 +43,11 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 - Tests are external packages (`package config_test`), table-driven where there
   are several cases, and document expectations with got/want messages.
 
+## Git
+
+- Write commit messages, PR titles and PR descriptions in English, matching the
+  rest of the repository. Commit messages follow Conventional Commits.
+
 ## Gotchas
 
 - Golden files: refresh with `go test ./internal/config -update` after reviewing
