@@ -104,10 +104,16 @@ lifetime never has to be managed.
 Credentials and the region come from the standard AWS SDK chain;
 `--region` overrides the resolved region.
 
+The database user has to be named explicitly, in the DSN or `PGUSER`: pgx would
+otherwise fall back to the OS username, and a token signed for the wrong role
+comes back from the server as an opaque PAM failure.
+
 IAM authentication is rejected over a plaintext connection, so unless the DSN
 (or `PGSSLMODE`) pins an `sslmode`, the connection is upgraded to the equivalent
-of `verify-full` with no plaintext fallback. Aurora's certificates chain to the
-RDS CA rather than a public root, so pass the bundle:
+of `verify-full` and the plaintext attempts are dropped (other hosts in a
+multi-host DSN are kept). Pinning an `sslmode` yourself leaves the verification
+level alone; `--sslrootcert` is installed as the CA either way. Aurora's
+certificates chain to the RDS CA rather than a public root, so pass the bundle:
 
 ```bash
 curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem

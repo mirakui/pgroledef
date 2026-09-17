@@ -55,6 +55,15 @@ func TestNewConnector(t *testing.T) {
 			want: "does not use AWS tokens",
 		},
 		{
+			name: "the database user has to be named",
+			opts: awsauth.Options{DSN: "postgres://h:5432/d", Mode: awsauth.ModeRDSIAM},
+			want: "needs an explicit database user",
+		},
+		{
+			name: "a user in keyword form counts",
+			opts: awsauth.Options{DSN: "host=h port=5432 dbname=d user=app sslmode=require", Mode: awsauth.ModeRDSIAM},
+		},
+		{
 			name: "aurora without a CA bundle explains the remedy",
 			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM},
 			want: "RDS CA bundle",
@@ -72,6 +81,10 @@ func TestNewConnector(t *testing.T) {
 			opts: awsauth.Options{DSN: "postgres://admin@c.dsql.ap-northeast-1.on.aws:5432/postgres", Mode: awsauth.ModeDSQLAdmin},
 		},
 		{
+			name: "sslrootcert=system means the system roots, not a file",
+			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM, SSLRootCert: "system"},
+		},
+		{
 			name: "a missing CA bundle is reported",
 			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM, SSLRootCert: "/nonexistent.pem"},
 			want: "read sslrootcert",
@@ -82,6 +95,8 @@ func TestNewConnector(t *testing.T) {
 			// The connector must not depend on the ambient libpq environment.
 			t.Setenv("PGSSLMODE", "")
 			t.Setenv("PGSSLROOTCERT", "")
+			t.Setenv("PGUSER", "")
+			t.Setenv("PGSERVICE", "")
 			t.Setenv("AWS_REGION", "ap-northeast-1")
 			_, err := awsauth.NewConnector(context.Background(), c.opts)
 			switch {
@@ -93,6 +108,66 @@ func TestNewConnector(t *testing.T) {
 				t.Fatalf("want error containing %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+// TestPinnedSSLModeKeepsRootCert covers the case where the caller pinned the
+// verification level themselves: pgx decides how to verify, but --sslrootcert
+// still has to be the bundle it verifies against.
+func TestPinnedSSLModeKeepsRootCert(t *testing.T) {
+	t.Setenv("PGSSLMODE", "")
+	t.Setenv("PGSSLROOTCERT", "")
+	t.Setenv("PGUSER", "")
+	t.Setenv("PGSERVICE", "")
+	t.Setenv("AWS_REGION", "ap-northeast-1")
+	ca := writeCABundle(t)
+	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
+		DSN:         "postgres://u@h:5432/d?sslmode=verify-ca",
+		Mode:        awsauth.ModeRDSIAM,
+		SSLRootCert: ca,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := c.ConnConfig()
+	if cfg.TLSConfig == nil {
+		t.Fatal("expected TLS to stay enabled")
+	}
+	if cfg.TLSConfig.RootCAs == nil {
+		t.Fatal("--sslrootcert was discarded because the dsn pinned an sslmode")
+	}
+}
+
+// TestUpgradeKeepsExtraHosts covers the multi-host case: clearing Fallbacks
+// outright would drop the plaintext attempts and the other hosts with them.
+func TestUpgradeKeepsExtraHosts(t *testing.T) {
+	t.Setenv("PGSSLMODE", "")
+	t.Setenv("PGSSLROOTCERT", "")
+	t.Setenv("PGUSER", "")
+	t.Setenv("PGSERVICE", "")
+	t.Setenv("AWS_REGION", "ap-northeast-1")
+	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
+		DSN:  "postgres://admin@a.dsql.ap-northeast-1.on.aws,b.dsql.ap-northeast-1.on.aws:5432/postgres",
+		Mode: awsauth.ModeDSQLAdmin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := c.ConnConfig()
+	hosts := map[string]bool{cfg.Host: true}
+	for _, fb := range cfg.Fallbacks {
+		if fb.TLSConfig == nil {
+			t.Fatalf("a plaintext fallback survived for host %s", fb.Host)
+		}
+		if fb.TLSConfig.ServerName != fb.Host {
+			t.Fatalf("fallback for %s verifies the name %q", fb.Host, fb.TLSConfig.ServerName)
+		}
+		hosts[fb.Host] = true
+	}
+	for _, want := range []string{"a.dsql.ap-northeast-1.on.aws", "b.dsql.ap-northeast-1.on.aws"} {
+		if !hosts[want] {
+			t.Fatalf("host %s was dropped; kept %v", want, hosts)
+		}
 	}
 }
 

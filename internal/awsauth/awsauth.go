@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	dsqlauth "github.com/aws/aws-sdk-go-v2/feature/dsql/auth"
 	rdsauth "github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Mode selects how the connection password is obtained.
@@ -80,10 +82,14 @@ func NewConnector(ctx context.Context, opts Options) (*Connector, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
-	if base.User == "" {
-		return nil, fmt.Errorf("auth mode %q needs a database user (set it in --dsn or PGUSER)", opts.Mode)
+	// pgx falls back to the OS username, which for IAM authentication means a
+	// token signed for the wrong role and an opaque PAM failure from the
+	// server. The database user has to be a deliberate choice here.
+	if !hasExplicitUser(opts.DSN) {
+		return nil, fmt.Errorf("auth mode %q needs an explicit database user: put it in --dsn "+
+			"(postgres://<role>@host:5432/db) or set PGUSER", opts.Mode)
 	}
-	if err := enforceTLS(base, opts.Mode, opts.DSN, opts.SSLRootCert); err != nil {
+	if err := applyTLS(base, opts.Mode, opts.DSN, opts.SSLRootCert); err != nil {
 		return nil, err
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
@@ -99,6 +105,10 @@ func NewConnector(ctx context.Context, opts Options) (*Connector, error) {
 	}
 	return &Connector{base: base, mode: opts.Mode, region: region, creds: awsCfg.Credentials}, nil
 }
+
+// ConnConfig returns a copy of the settings connections are made with, so the
+// TLS decisions above can be inspected.
+func (c *Connector) ConnConfig() *pgx.ConnConfig { return c.base.Copy() }
 
 func (c *Connector) Connect(ctx context.Context, database string) (*pgx.Conn, error) {
 	cfg := c.base.Copy()
@@ -145,13 +155,14 @@ func (c *Connector) token(ctx context.Context, cfg *pgx.ConnConfig) (string, err
 	return "", fmt.Errorf("unknown auth mode %q", c.mode)
 }
 
-// enforceTLS upgrades the connection to verify-full unless the caller asked for
-// something else. IAM authentication is rejected over a plaintext connection,
-// and pgx's default ("prefer") would silently fall back to one.
-func enforceTLS(cfg *pgx.ConnConfig, mode Mode, dsn, rootCert string) error {
-	if sslModeRequested(dsn) {
-		return nil
-	}
+// applyTLS makes sure the connection verifies the server against the intended
+// CA, and that it cannot silently end up in plaintext. IAM authentication is
+// rejected over a plaintext connection, and pgx's default ("prefer") would fall
+// back to one.
+//
+// When the caller pinned an sslmode, that choice is left alone; only the CA
+// bundle is installed, so --sslrootcert keeps meaning "verify against this".
+func applyTLS(cfg *pgx.ConnConfig, mode Mode, dsn, rootCert string) error {
 	if rootCert == "" {
 		rootCert = os.Getenv("PGSSLROOTCERT")
 	}
@@ -159,23 +170,58 @@ func enforceTLS(cfg *pgx.ConnConfig, mode Mode, dsn, rootCert string) error {
 	if err != nil {
 		return err
 	}
-	if pool == nil && mode == ModeRDSIAM {
+	if sslModeRequested(dsn) {
+		if pool != nil {
+			setRootCAs(cfg.TLSConfig, pool)
+			for _, fb := range cfg.Fallbacks {
+				setRootCAs(fb.TLSConfig, pool)
+			}
+		}
+		return nil
+	}
+	if pool == nil && rootCert == "" && mode == ModeRDSIAM {
 		return fmt.Errorf("aurora needs the RDS CA bundle for verify-full: pass --sslrootcert " +
 			"(curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem), " +
 			"or set sslmode= in --dsn to choose the verification level yourself")
 	}
-	cfg.TLSConfig = &tls.Config{
-		ServerName: cfg.Host,
-		RootCAs:    pool, // nil means the system roots, which is what DSQL needs
-		MinVersion: tls.VersionTLS12,
+	cfg.TLSConfig = verifyFull(cfg.Host, pool)
+	// Fallbacks carries every host/port x TLS combination after the primary,
+	// so the plaintext attempts have to be dropped one by one rather than by
+	// clearing the slice, which would take the extra hosts with them.
+	kept := make([]*pgconn.FallbackConfig, 0, len(cfg.Fallbacks))
+	for _, fb := range cfg.Fallbacks {
+		if fb.TLSConfig == nil {
+			continue
+		}
+		fb.TLSConfig = verifyFull(fb.Host, pool)
+		kept = append(kept, fb)
 	}
-	// Fallbacks carry the plaintext attempt that "prefer" installs.
-	cfg.Fallbacks = nil
+	cfg.Fallbacks = kept
 	return nil
 }
 
+// verifyFull is the equivalent of libpq's sslmode=verify-full. A nil pool means
+// the system roots, which is what Aurora DSQL's public chain needs.
+func verifyFull(host string, pool *x509.CertPool) *tls.Config {
+	return &tls.Config{
+		ServerName: host,
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS12,
+	}
+}
+
+func setRootCAs(c *tls.Config, pool *x509.CertPool) {
+	if c != nil {
+		c.RootCAs = pool
+	}
+}
+
+// systemRootCert is libpq's spelling for "use the system trust store" - a
+// value, not a path.
+const systemRootCert = "system"
+
 func certPool(path string) (*x509.CertPool, error) {
-	if path == "" {
+	if path == "" || path == systemRootCert {
 		return nil, nil
 	}
 	pem, err := os.ReadFile(path)
@@ -193,4 +239,31 @@ func certPool(path string) (*x509.CertPool, error) {
 // which case pgx's own handling of it is left alone.
 func sslModeRequested(dsn string) bool {
 	return strings.Contains(dsn, "sslmode=") || os.Getenv("PGSSLMODE") != ""
+}
+
+// hasExplicitUser reports whether the caller named the database user, rather
+// than leaving pgx to guess it from the OS. A connection service file may
+// supply it too, so naming a service counts.
+func hasExplicitUser(dsn string) bool {
+	if os.Getenv("PGUSER") != "" || os.Getenv("PGSERVICE") != "" {
+		return true
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return false
+		}
+		if u.User != nil && u.User.Username() != "" {
+			return true
+		}
+		q := u.Query()
+		return q.Get("user") != "" || q.Get("service") != ""
+	}
+	for _, field := range strings.Fields(dsn) {
+		k, v, ok := strings.Cut(field, "=")
+		if ok && v != "" && (k == "user" || k == "service") {
+			return true
+		}
+	}
+	return false
 }

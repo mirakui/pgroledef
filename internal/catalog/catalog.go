@@ -62,10 +62,14 @@ type Schema struct {
 }
 
 type Database struct {
-	Name    string
-	Owner   string
-	ACL     ACL
-	Schemas map[string]*Schema // nil until ReadDatabase is called
+	Name  string
+	Owner string
+	ACL   ACL
+	// AllowConn is pg_database.datallowconn. Its ACL is still readable when
+	// false, so the database stays in State; only reading its schemas is
+	// impossible.
+	AllowConn bool
+	Schemas   map[string]*Schema // nil until ReadDatabase is called
 }
 
 // State is the cluster-wide snapshot.
@@ -152,25 +156,26 @@ func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 	}
 
 	rows, err = conn.Query(ctx, `
-		SELECT d.datname, pg_get_userbyid(d.datdba), a.grantee, a.privilege_type
+		SELECT d.datname, pg_get_userbyid(d.datdba), d.datallowconn, a.grantee, a.privilege_type
 		FROM pg_database d
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(pg_get_userbyid(x.grantee), '') AS grantee, x.privilege_type
 			FROM aclexplode(d.datacl) x WHERE x.grantee <> 0
 		) a ON true
-		WHERE NOT d.datistemplate AND d.datallowconn`)
+		WHERE NOT d.datistemplate`)
 	if err != nil {
 		return nil, fmt.Errorf("read pg_database: %w", err)
 	}
 	for rows.Next() {
 		var name, owner string
+		var allowConn bool
 		var grantee, priv *string
-		if err := rows.Scan(&name, &owner, &grantee, &priv); err != nil {
+		if err := rows.Scan(&name, &owner, &allowConn, &grantee, &priv); err != nil {
 			return nil, err
 		}
 		db := st.Databases[name]
 		if db == nil {
-			db = &Database{Name: name, Owner: owner, ACL: ACL{}}
+			db = &Database{Name: name, Owner: owner, AllowConn: allowConn, ACL: ACL{}}
 			st.Databases[name] = db
 		}
 		if grantee != nil && priv != nil && *grantee != "" {

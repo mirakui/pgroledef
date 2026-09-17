@@ -4,12 +4,14 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mirakui/pgroledef/internal/catalog"
 	"github.com/mirakui/pgroledef/internal/config"
@@ -83,35 +85,56 @@ func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector)
 		if db == nil {
 			return nil, fmt.Errorf("database %q is referenced but does not exist (database creation is out of scope)", name)
 		}
-		dconn, err := connector.Connect(ctx, name)
-		if err != nil {
-			return nil, err
+		if !db.AllowConn {
+			return nil, fmt.Errorf("database %q is referenced but does not accept connections (pg_database.datallowconn is false)", name)
 		}
-		err = catalog.ReadDatabase(ctx, dconn, db)
-		dconn.Close(ctx)
-		if err != nil {
+		if err := readDatabase(ctx, connector, db); err != nil {
 			return nil, err
 		}
 	}
 	// Databases not referenced by the config but managed (not unmanaged) still
 	// need reading so stray privileges of managed roles can be revoked.
 	for name, db := range st.Databases {
-		if db.Schemas != nil || matchesAny(name, cfg.Policy.UnmanagedDatabases) {
+		if db.Schemas != nil || !db.AllowConn || matchesAny(name, cfg.Policy.UnmanagedDatabases) {
 			continue
 		}
-		dconn, err := connector.Connect(ctx, name)
-		if err != nil {
-			// Aurora keeps databases the master cannot connect to, and a
-			// managed database that cannot be read cannot be reconciled.
-			return nil, fmt.Errorf("%w\nadd %q to policy.unmanaged_databases if it is not meant to be managed", err, name)
-		}
-		err = catalog.ReadDatabase(ctx, dconn, db)
-		dconn.Close(ctx)
-		if err != nil {
+		if err := readDatabase(ctx, connector, db); err != nil {
 			return nil, err
 		}
 	}
 	return Diff(cfg, st)
+}
+
+// readDatabase fills one database's schemas. A managed database that cannot be
+// read cannot be reconciled, so this is fatal; when the database is refusing
+// this user rather than merely unreachable, the error names the way out.
+func readDatabase(ctx context.Context, connector catalog.Connector, db *catalog.Database) error {
+	conn, err := connector.Connect(ctx, db.Name)
+	if err != nil {
+		return notForUs(db.Name, err)
+	}
+	defer conn.Close(ctx)
+	return notForUs(db.Name, catalog.ReadDatabase(ctx, conn, db))
+}
+
+// notForUs appends the policy hint when the server rejected this user, rather
+// than to every failure: following the hint removes the database from
+// reconciliation for good, which is the wrong answer to a transient error or an
+// expired token.
+func notForUs(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	// 28xxx: invalid authorization (pg_hba rejection, failed password).
+	// 42501: insufficient privilege, e.g. a catalog read denied mid-way.
+	if !strings.HasPrefix(pgErr.Code, "28") && pgErr.Code != "42501" {
+		return err
+	}
+	return fmt.Errorf("%w\nadd %q to policy.unmanaged_databases if it is not meant to be managed", err, name)
 }
 
 func matchesAny(name string, patterns []string) bool {
