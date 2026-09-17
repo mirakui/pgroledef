@@ -57,7 +57,7 @@ func main() {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "OK: %d roles, %d grants, %d default privileges\n",
-				len(cfg.Roles), len(cfg.Grants), len(cfg.DefaultPrivileges))
+				len(cfg.Roles), len(cfg.FlatGrants()), len(cfg.FlatDefaultPrivileges()))
 			return nil
 		},
 	}

@@ -71,8 +71,10 @@ type Database struct {
 // State is the cluster-wide snapshot.
 type State struct {
 	CurrentUser string
-	Roles       map[string]*Role
-	Databases   map[string]*Database
+	// ServerVersionNum is server_version_num (e.g. 170004); 0 when unknown.
+	ServerVersionNum int
+	Roles            map[string]*Role
+	Databases        map[string]*Database
 }
 
 // Connector opens connections to a given database on the same server.
@@ -107,7 +109,8 @@ func (c *DSNConnector) Connect(ctx context.Context, database string) (*pgx.Conn,
 // connector's default database.
 func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 	st := &State{Roles: map[string]*Role{}, Databases: map[string]*Database{}}
-	if err := conn.QueryRow(ctx, `SELECT current_user`).Scan(&st.CurrentUser); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT current_user, current_setting('server_version_num')::int`).
+		Scan(&st.CurrentUser, &st.ServerVersionNum); err != nil {
 		return nil, err
 	}
 	rows, err := conn.Query(ctx, `SELECT rolname, rolcanlogin, rolsuper FROM pg_roles ORDER BY rolname`)

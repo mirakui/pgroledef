@@ -36,6 +36,20 @@ func TestReconcileRoundTrip(t *testing.T) {
 	}
 	defer admin.Close(ctx)
 
+	var versionNum int
+	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&versionNum); err != nil {
+		t.Fatal(err)
+	}
+	major := config.MajorFromVersionNum(versionNum)
+	t.Logf("server is PostgreSQL %d", major)
+
+	// MAINTAIN only exists from PostgreSQL 17 on, so the declaration itself
+	// differs per major version.
+	readerTablePrivs := []config.Privilege{config.PrivSelect}
+	if major >= 17 {
+		readerTablePrivs = append(readerTablePrivs, config.PrivMaintain)
+	}
+
 	suffix := fmt.Sprintf("t%d", time.Now().UnixNano()%1e9)
 	db := "pgroledef_" + suffix
 	viewer, editor, app := "viewer_"+suffix, "editor_"+suffix, "app_"+suffix
@@ -63,23 +77,33 @@ func TestReconcileRoundTrip(t *testing.T) {
 		Version: 1,
 		Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "test"},
 		Roles: []config.Role{
-			{Name: viewer},
-			{Name: editor, MemberOf: []string{viewer}},
+			{Name: viewer, Grants: []config.RoleGrant{
+				{On: config.GrantTarget{Database: db}, Privileges: []config.Privilege{config.PrivConnect}},
+				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage}},
+				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: readerTablePrivs},
+			}},
+			{Name: editor, MemberOf: []string{viewer}, Grants: []config.RoleGrant{
+				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage, config.PrivCreate}},
+				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: []config.Privilege{config.PrivSelect, config.PrivInsert, config.PrivUpdate, config.PrivDelete}},
+				{On: config.GrantTarget{AllSequencesInSchema: schema}, Privileges: []config.Privilege{config.PrivUsage, config.PrivSelect}},
+			}},
 			{Name: app, Login: true, MemberOf: []string{editor, "rds_iam"}, CreatesObjectsIn: []string{schema}},
-		},
-		Grants: []config.Grant{
-			{On: config.GrantTarget{Database: db}, To: viewer, Privileges: []config.Privilege{config.PrivConnect}},
-			{On: config.GrantTarget{Schema: schema}, To: viewer, Privileges: []config.Privilege{config.PrivUsage}},
-			{On: config.GrantTarget{Schema: schema}, To: editor, Privileges: []config.Privilege{config.PrivUsage, config.PrivCreate}},
-			{On: config.GrantTarget{AllTablesInSchema: schema}, To: viewer, Privileges: []config.Privilege{config.PrivSelect}},
-			{On: config.GrantTarget{AllTablesInSchema: schema}, To: editor, Privileges: []config.Privilege{config.PrivSelect, config.PrivInsert, config.PrivUpdate, config.PrivDelete}},
-			{On: config.GrantTarget{AllSequencesInSchema: schema}, To: editor, Privileges: []config.Privilege{config.PrivUsage, config.PrivSelect}},
 		},
 	}
 	cfg.Policy = config.DefaultPolicy()
 	normalized := validate(t, cfg)
 
-	p := build(t, ctx, normalized, connector)
+	// A declaration pinned to another major version must be refused before
+	// anything is applied.
+	mismatched := *normalized
+	mismatched.Target.PostgresVersion = major + 1
+	if _, err := plan.Build(ctx, &mismatched, connector); err == nil {
+		t.Fatal("plan should refuse a declaration pinned to a different major version")
+	}
+	pinned := *normalized
+	pinned.Target.PostgresVersion = major
+
+	p := build(t, ctx, &pinned, connector)
 	if p.Empty() {
 		t.Fatal("first plan should create roles and grants")
 	}
@@ -108,12 +132,15 @@ func TestReconcileRoundTrip(t *testing.T) {
 		t.Fatalf("default privileges did not cover a table created by the creator role:\n%s", dump(p))
 	}
 
-	// Tighten: drop the sequence grant, make app NOLOGIN and drop IAM auth -> destructive plan.
+	// Tighten: drop editor's sequence grant, make app NOLOGIN and drop IAM auth -> destructive plan.
 	tight := *cfg
-	tight.Grants = cfg.Grants[:len(cfg.Grants)-1]
 	tight.Roles = append([]config.Role(nil), cfg.Roles...)
 	for i := range tight.Roles {
-		if tight.Roles[i].Name == app {
+		switch tight.Roles[i].Name {
+		case editor:
+			g := tight.Roles[i].Grants
+			tight.Roles[i].Grants = g[:len(g)-1]
+		case app:
 			tight.Roles[i].Login = false
 			tight.Roles[i].MemberOf = []string{editor}
 		}

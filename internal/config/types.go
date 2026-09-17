@@ -28,27 +28,65 @@ const (
 	PrivCreate     Privilege = "CREATE"
 	PrivConnect    Privilege = "CONNECT"
 	PrivTemp       Privilege = "TEMPORARY"
+	PrivMaintain   Privilege = "MAINTAIN" // PostgreSQL 17+
 )
 
 var allPrivileges = map[Privilege]bool{
 	PrivSelect: true, PrivInsert: true, PrivUpdate: true, PrivDelete: true,
 	PrivTruncate: true, PrivReferences: true, PrivTrigger: true,
 	PrivUsage: true, PrivCreate: true, PrivConnect: true, PrivTemp: true,
+	PrivMaintain: true,
+}
+
+// Supported PostgreSQL major versions. Aurora PostgreSQL tracks community
+// PostgreSQL closely enough that the catalogs and grant syntax pgroledef uses
+// are identical across these majors; only the privilege set differs.
+const (
+	MinMajor = 16
+	MaxMajor = 18
+)
+
+// SupportedMajors lists the majors target.postgres_version may declare.
+var SupportedMajors = []int{16, 17, 18}
+
+// privilegeMinMajor records privileges that do not exist in every supported
+// major. MAINTAIN was introduced in PostgreSQL 17.
+var privilegeMinMajor = map[Privilege]int{PrivMaintain: 17}
+
+// PrivilegeMinMajor returns the first PostgreSQL major version that knows the
+// privilege (MinMajor when it has always existed).
+func PrivilegeMinMajor(p Privilege) int {
+	if v, ok := privilegeMinMajor[p]; ok {
+		return v
+	}
+	return MinMajor
+}
+
+// IsSupportedMajor reports whether the major version may be declared.
+func IsSupportedMajor(major int) bool {
+	for _, v := range SupportedMajors {
+		if v == major {
+			return true
+		}
+	}
+	return false
 }
 
 // Config is the canonical document. Field names are the JSON wire format.
 type Config struct {
-	Version           int                `json:"version"`
-	Target            Target             `json:"target"`
-	Policy            Policy             `json:"policy"`
-	Roles             []Role             `json:"roles"`
-	Grants            []Grant            `json:"grants"`
-	DefaultPrivileges []DefaultPrivilege `json:"default_privileges"`
+	Version int    `json:"version"`
+	Target  Target `json:"target"`
+	Policy  Policy `json:"policy"`
+	Roles   []Role `json:"roles"`
 }
 
 type Target struct {
 	Engine     Engine `json:"engine"`
 	Identifier string `json:"identifier"`
+	// PostgresVersion is the major version of the target server (16, 17, 18).
+	// Optional: when set, validate rejects declarations the version cannot
+	// express, and plan/apply refuse a server whose major version differs.
+	PostgresVersion int `json:"postgres_version,omitempty"`
 }
 
 type Policy struct {
@@ -64,6 +102,25 @@ type Role struct {
 	IAMPrincipals    []string          `json:"iam_principals,omitempty"` // DSQL: AWS IAM GRANT targets
 	Settings         map[string]string `json:"settings,omitempty"`
 	CreatesObjectsIn []string          `json:"creates_objects_in,omitempty"`
+	// Grants held by this role. The grantee is implied by the enclosing role.
+	Grants []RoleGrant `json:"grants,omitempty"`
+	// Default privileges this role receives on objects created later by for_role.
+	// Normally derived from the creator's creates_objects_in; may be declared explicitly.
+	DefaultPrivileges []RoleDefaultPrivilege `json:"default_privileges,omitempty"`
+}
+
+// RoleGrant is a grant as written under a role (no grantee field).
+type RoleGrant struct {
+	On         GrantTarget `json:"on"`
+	Privileges []Privilege `json:"privileges"`
+}
+
+// RoleDefaultPrivilege is a default privilege as written under the grantee role.
+type RoleDefaultPrivilege struct {
+	ForRole    string      `json:"for_role"`
+	InSchema   string      `json:"in_schema"`
+	On         ObjectKind  `json:"on"`
+	Privileges []Privilege `json:"privileges"`
 }
 
 // GrantTarget is a tagged union: exactly one field must be set.
@@ -76,10 +133,11 @@ type GrantTarget struct {
 	Sequence             string `json:"sequence,omitempty"`
 }
 
+// Grant is the flattened internal form (grantee explicit) used by the planner.
 type Grant struct {
-	On         GrantTarget `json:"on"`
-	To         string      `json:"to"`
-	Privileges []Privilege `json:"privileges"`
+	On         GrantTarget
+	To         string
+	Privileges []Privilege
 }
 
 type ObjectKind string
@@ -89,12 +147,13 @@ const (
 	ObjSequences ObjectKind = "sequences"
 )
 
+// DefaultPrivilege is the flattened internal form (grantee explicit) used by the planner.
 type DefaultPrivilege struct {
-	ForRole    string      `json:"for_role"`
-	InSchema   string      `json:"in_schema"`
-	On         ObjectKind  `json:"on"`
-	To         string      `json:"to"`
-	Privileges []Privilege `json:"privileges"`
+	ForRole    string
+	InSchema   string
+	On         ObjectKind
+	To         string
+	Privileges []Privilege
 }
 
 // DefaultPolicy returns the policy defaults applied when a field is omitted.
@@ -174,6 +233,28 @@ func (c *Config) RoleNames() []string {
 	out := make([]string, 0, len(c.Roles))
 	for _, r := range c.Roles {
 		out = append(out, r.Name)
+	}
+	return out
+}
+
+// FlatGrants returns every grant with its grantee, in declaration order.
+func (c *Config) FlatGrants() []Grant {
+	var out []Grant
+	for _, r := range c.Roles {
+		for _, g := range r.Grants {
+			out = append(out, Grant{On: g.On, To: r.Name, Privileges: g.Privileges})
+		}
+	}
+	return out
+}
+
+// FlatDefaultPrivileges returns every default privilege with its grantee, in declaration order.
+func (c *Config) FlatDefaultPrivileges() []DefaultPrivilege {
+	var out []DefaultPrivilege
+	for _, r := range c.Roles {
+		for _, d := range r.DefaultPrivileges {
+			out = append(out, DefaultPrivilege{ForRole: d.ForRole, InSchema: d.InSchema, On: d.On, To: r.Name, Privileges: d.Privileges})
+		}
 	}
 	return out
 }

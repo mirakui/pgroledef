@@ -1,0 +1,1 @@
+privilege "MAINTAIN" requires PostgreSQL 17 or later, but target.postgres_version is 16

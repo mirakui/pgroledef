@@ -71,6 +71,9 @@ func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector)
 	if err != nil {
 		return nil, err
 	}
+	if err := config.CheckServerMajor(cfg, config.MajorFromVersionNum(st.ServerVersionNum)); err != nil {
+		return nil, err
+	}
 	dbs := referencedDatabases(cfg)
 	for _, name := range dbs {
 		db := st.Databases[name]
@@ -117,7 +120,7 @@ func matchesAny(name string, patterns []string) bool {
 
 func referencedDatabases(cfg *config.Config) []string {
 	seen := map[string]bool{}
-	for _, g := range cfg.Grants {
+	for _, g := range cfg.FlatGrants() {
 		kind, val, _ := g.On.Kind()
 		switch kind {
 		case "database":
@@ -130,7 +133,7 @@ func referencedDatabases(cfg *config.Config) []string {
 			seen[q.Database] = true
 		}
 	}
-	for _, d := range cfg.DefaultPrivileges {
+	for _, d := range cfg.FlatDefaultPrivileges() {
 		q, _ := config.ParseSchema(d.InSchema)
 		seen[q.Database] = true
 	}
@@ -174,6 +177,11 @@ func diffSets(desired, actual privSet) (missing, extra []string) {
 
 // Diff computes the plan from an already-read state (pure; used by tests).
 func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
+	if st.ServerVersionNum != 0 {
+		if err := config.CheckServerMajor(cfg, config.MajorFromVersionNum(st.ServerVersionNum)); err != nil {
+			return nil, err
+		}
+	}
 	p := &Plan{}
 	d := &differ{cfg: cfg, st: st, p: p}
 	if err := d.roles(); err != nil {
@@ -305,7 +313,7 @@ func (d *differ) grants() error {
 		}
 	}
 
-	for _, g := range d.cfg.Grants {
+	for _, g := range d.cfg.FlatGrants() {
 		kind, val, _ := g.On.Kind()
 		switch kind {
 		case "database":
@@ -518,7 +526,7 @@ type defaultKey struct {
 
 func (d *differ) defaultPrivileges() error {
 	desired := map[defaultKey]privSet{}
-	for _, dp := range d.cfg.DefaultPrivileges {
+	for _, dp := range d.cfg.FlatDefaultPrivileges() {
 		q, _ := config.ParseSchema(dp.InSchema)
 		if err := d.requireSchema(q); err != nil {
 			return err
