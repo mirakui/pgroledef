@@ -241,3 +241,7 @@ that locally:
 ```bash
 go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=publish
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
