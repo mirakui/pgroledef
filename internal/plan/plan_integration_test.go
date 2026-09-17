@@ -63,17 +63,17 @@ func TestReconcileRoundTrip(t *testing.T) {
 		Version: 1,
 		Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "test"},
 		Roles: []config.Role{
-			{Name: viewer},
-			{Name: editor, MemberOf: []string{viewer}},
+			{Name: viewer, Grants: []config.RoleGrant{
+				{On: config.GrantTarget{Database: db}, Privileges: []config.Privilege{config.PrivConnect}},
+				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage}},
+				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: []config.Privilege{config.PrivSelect}},
+			}},
+			{Name: editor, MemberOf: []string{viewer}, Grants: []config.RoleGrant{
+				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage, config.PrivCreate}},
+				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: []config.Privilege{config.PrivSelect, config.PrivInsert, config.PrivUpdate, config.PrivDelete}},
+				{On: config.GrantTarget{AllSequencesInSchema: schema}, Privileges: []config.Privilege{config.PrivUsage, config.PrivSelect}},
+			}},
 			{Name: app, Login: true, MemberOf: []string{editor, "rds_iam"}, CreatesObjectsIn: []string{schema}},
-		},
-		Grants: []config.Grant{
-			{On: config.GrantTarget{Database: db}, To: viewer, Privileges: []config.Privilege{config.PrivConnect}},
-			{On: config.GrantTarget{Schema: schema}, To: viewer, Privileges: []config.Privilege{config.PrivUsage}},
-			{On: config.GrantTarget{Schema: schema}, To: editor, Privileges: []config.Privilege{config.PrivUsage, config.PrivCreate}},
-			{On: config.GrantTarget{AllTablesInSchema: schema}, To: viewer, Privileges: []config.Privilege{config.PrivSelect}},
-			{On: config.GrantTarget{AllTablesInSchema: schema}, To: editor, Privileges: []config.Privilege{config.PrivSelect, config.PrivInsert, config.PrivUpdate, config.PrivDelete}},
-			{On: config.GrantTarget{AllSequencesInSchema: schema}, To: editor, Privileges: []config.Privilege{config.PrivUsage, config.PrivSelect}},
 		},
 	}
 	cfg.Policy = config.DefaultPolicy()
@@ -108,12 +108,15 @@ func TestReconcileRoundTrip(t *testing.T) {
 		t.Fatalf("default privileges did not cover a table created by the creator role:\n%s", dump(p))
 	}
 
-	// Tighten: drop the sequence grant, make app NOLOGIN and drop IAM auth -> destructive plan.
+	// Tighten: drop editor's sequence grant, make app NOLOGIN and drop IAM auth -> destructive plan.
 	tight := *cfg
-	tight.Grants = cfg.Grants[:len(cfg.Grants)-1]
 	tight.Roles = append([]config.Role(nil), cfg.Roles...)
 	for i := range tight.Roles {
-		if tight.Roles[i].Name == app {
+		switch tight.Roles[i].Name {
+		case editor:
+			g := tight.Roles[i].Grants
+			tight.Roles[i].Grants = g[:len(g)-1]
+		case app:
 			tight.Roles[i].Login = false
 			tight.Roles[i].MemberOf = []string{editor}
 		}

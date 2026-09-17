@@ -48,7 +48,7 @@ func Validate(in *Config) (*Config, error) {
 type validator struct {
 	cfg      *Config
 	problems []string
-	expanded []DefaultPrivilege
+	expanded [][]RoleDefaultPrivilege // per role, same index as cfg.Roles
 }
 
 func (v *validator) errf(format string, args ...any) {
@@ -174,125 +174,130 @@ func (v *validator) checkPrivileges(ctx string, kind string, privs []Privilege) 
 }
 
 func (v *validator) grants() {
-	seen := map[string]bool{}
-	for i, g := range v.cfg.Grants {
-		ctx := fmt.Sprintf("grants[%d]", i)
-		kind, val, err := g.On.Kind()
-		if err != nil {
-			v.errf("%s: %v", ctx, err)
-			continue
-		}
-		ctx = fmt.Sprintf("grants[%d] (%s %s to %s)", i, kind, val, g.To)
-		if !v.roleExists(g.To) {
-			v.errf("%s: grantee references undeclared role %q", ctx, g.To)
-		}
-		var db string
-		privKind := kind
-		switch kind {
-		case "database":
-			db = val
-		case "schema", "all_tables_in_schema", "all_sequences_in_schema":
-			q, err := ParseSchema(val)
+	for i, r := range v.cfg.Roles {
+		seen := map[string]bool{}
+		for j, g := range r.Grants {
+			ctx := fmt.Sprintf("roles[%d] %q grants[%d]", i, r.Name, j)
+			kind, val, err := g.On.Kind()
 			if err != nil {
 				v.errf("%s: %v", ctx, err)
 				continue
 			}
-			db = q.Database
-			privKind = map[string]string{"schema": "schema", "all_tables_in_schema": "tables", "all_sequences_in_schema": "sequences"}[kind]
-		case "table", "sequence":
-			q, err := ParseRelation(val)
-			if err != nil {
-				v.errf("%s: %v", ctx, err)
-				continue
+			ctx = fmt.Sprintf("roles[%d] %q grants[%d] (%s %s)", i, r.Name, j, kind, val)
+			var db string
+			privKind := kind
+			switch kind {
+			case "database":
+				db = val
+			case "schema", "all_tables_in_schema", "all_sequences_in_schema":
+				q, err := ParseSchema(val)
+				if err != nil {
+					v.errf("%s: %v", ctx, err)
+					continue
+				}
+				db = q.Database
+				privKind = map[string]string{"schema": "schema", "all_tables_in_schema": "tables", "all_sequences_in_schema": "sequences"}[kind]
+			case "table", "sequence":
+				q, err := ParseRelation(val)
+				if err != nil {
+					v.errf("%s: %v", ctx, err)
+					continue
+				}
+				db = q.Database
+				privKind = map[string]string{"table": "tables", "sequence": "sequences"}[kind]
 			}
-			db = q.Database
-			privKind = map[string]string{"table": "tables", "sequence": "sequences"}[kind]
+			if v.isUnmanagedDB(db) {
+				v.errf("%s: database %q matches policy.unmanaged_databases", ctx, db)
+			}
+			v.checkPrivileges(ctx, privKind, g.Privileges)
+			key := kind + "\x00" + val
+			if seen[key] {
+				v.errf("%s: duplicate grant for the same target; merge the privileges into one entry", ctx)
+			}
+			seen[key] = true
 		}
-		if v.isUnmanagedDB(db) {
-			v.errf("%s: database %q matches policy.unmanaged_databases", ctx, db)
-		}
-		v.checkPrivileges(ctx, privKind, g.Privileges)
-		key := kind + "\x00" + val + "\x00" + g.To
-		if seen[key] {
-			v.errf("%s: duplicate grant for the same target and grantee; merge the privileges into one entry", ctx)
-		}
-		seen[key] = true
 	}
 }
 
-func dpKey(d DefaultPrivilege) string {
-	return d.ForRole + "\x00" + d.InSchema + "\x00" + string(d.On) + "\x00" + d.To
+func dpKey(d RoleDefaultPrivilege) string {
+	return d.ForRole + "\x00" + d.InSchema + "\x00" + string(d.On)
 }
 
 func (v *validator) defaultPrivileges() {
-	seen := map[string]bool{}
-	for i, d := range v.cfg.DefaultPrivileges {
-		ctx := fmt.Sprintf("default_privileges[%d] (for %s in %s on %s to %s)", i, d.ForRole, d.InSchema, d.On, d.To)
-		if !v.roleExists(d.ForRole) {
-			v.errf("%s: for_role references undeclared role %q", ctx, d.ForRole)
+	for i, r := range v.cfg.Roles {
+		seen := map[string]bool{}
+		for j, d := range r.DefaultPrivileges {
+			ctx := fmt.Sprintf("roles[%d] %q default_privileges[%d] (for %s in %s on %s)", i, r.Name, j, d.ForRole, d.InSchema, d.On)
+			if !v.roleExists(d.ForRole) {
+				v.errf("%s: for_role references undeclared role %q", ctx, d.ForRole)
+			}
+			if _, err := ParseSchema(d.InSchema); err != nil {
+				v.errf("%s: %v", ctx, err)
+			}
+			switch d.On {
+			case ObjTables, ObjSequences:
+				v.checkPrivileges(ctx, string(d.On), d.Privileges)
+			default:
+				v.errf("%s: on must be %q or %q", ctx, ObjTables, ObjSequences)
+			}
+			if seen[dpKey(d)] {
+				v.errf("%s: duplicate default privilege", ctx)
+			}
+			seen[dpKey(d)] = true
 		}
-		if !v.roleExists(d.To) {
-			v.errf("%s: grantee references undeclared role %q", ctx, d.To)
-		}
-		if _, err := ParseSchema(d.InSchema); err != nil {
-			v.errf("%s: %v", ctx, err)
-		}
-		switch d.On {
-		case ObjTables, ObjSequences:
-			v.checkPrivileges(ctx, string(d.On), d.Privileges)
-		default:
-			v.errf("%s: on must be %q or %q", ctx, ObjTables, ObjSequences)
-		}
-		if seen[dpKey(d)] {
-			v.errf("%s: duplicate default privilege", ctx)
-		}
-		seen[dpKey(d)] = true
 	}
 }
 
 // expandCreators derives ALTER DEFAULT PRIVILEGES FOR ROLE <creator> entries:
 // for every role that declares creates_objects_in, each all_tables_in_schema /
-// all_sequences_in_schema grant on that schema becomes a default privilege so
-// objects created later by that role carry the same grants.
+// all_sequences_in_schema grant held by any role on that schema becomes a
+// default privilege of that grantee, so objects created later by the creator
+// carry the same grants.
 func (v *validator) expandCreators() {
-	explicit := map[string]DefaultPrivilege{}
-	for _, d := range v.cfg.DefaultPrivileges {
-		explicit[dpKey(d)] = d
-	}
-	out := append([]DefaultPrivilege(nil), v.cfg.DefaultPrivileges...)
-	for _, r := range v.cfg.Roles {
-		creator := r.Name
-		for _, schema := range r.CreatesObjectsIn {
-			for _, g := range v.cfg.Grants {
-				var on ObjectKind
-				switch {
-				case g.On.AllTablesInSchema == schema:
-					on = ObjTables
-				case g.On.AllSequencesInSchema == schema:
-					on = ObjSequences
-				default:
-					continue
-				}
-				d := DefaultPrivilege{ForRole: creator, InSchema: schema, On: on, To: g.To, Privileges: g.Privileges}
-				if e, ok := explicit[dpKey(d)]; ok {
-					if !samePrivileges(e.Privileges, d.Privileges) {
-						v.errf("default privilege for %s in %s on %s to %s conflicts with the one derived from creates_objects_in (%v vs %v)",
-							d.ForRole, d.InSchema, d.On, d.To, e.Privileges, d.Privileges)
+	v.expanded = make([][]RoleDefaultPrivilege, len(v.cfg.Roles))
+	for gi, grantee := range v.cfg.Roles {
+		explicit := map[string]RoleDefaultPrivilege{}
+		for _, d := range grantee.DefaultPrivileges {
+			explicit[dpKey(d)] = d
+		}
+		out := append([]RoleDefaultPrivilege(nil), grantee.DefaultPrivileges...)
+		for _, creator := range v.cfg.Roles {
+			for _, schema := range creator.CreatesObjectsIn {
+				for _, g := range grantee.Grants {
+					var on ObjectKind
+					switch {
+					case g.On.AllTablesInSchema == schema:
+						on = ObjTables
+					case g.On.AllSequencesInSchema == schema:
+						on = ObjSequences
+					default:
+						continue
 					}
-					continue
+					d := RoleDefaultPrivilege{ForRole: creator.Name, InSchema: schema, On: on, Privileges: g.Privileges}
+					if e, ok := explicit[dpKey(d)]; ok {
+						if !samePrivileges(e.Privileges, d.Privileges) {
+							v.errf("role %q: default privilege for %s in %s on %s conflicts with the one derived from creates_objects_in (%v vs %v)",
+								grantee.Name, d.ForRole, d.InSchema, d.On, e.Privileges, d.Privileges)
+						}
+						continue
+					}
+					explicit[dpKey(d)] = d
+					out = append(out, d)
 				}
-				explicit[dpKey(d)] = d
-				out = append(out, d)
 			}
 		}
+		sort.Slice(out, func(i, j int) bool { return dpKey(out[i]) < dpKey(out[j]) })
+		v.expanded[gi] = out
 	}
-	sort.Slice(out, func(i, j int) bool { return dpKey(out[i]) < dpKey(out[j]) })
-	v.expanded = out
 }
 
 func (v *validator) normalized() *Config {
 	c := *v.cfg
-	c.DefaultPrivileges = v.expanded
+	c.Roles = make([]Role, len(v.cfg.Roles))
+	for i, r := range v.cfg.Roles {
+		c.Roles[i] = r
+		c.Roles[i].DefaultPrivileges = v.expanded[i]
+	}
 	return &c
 }
 

@@ -43,8 +43,22 @@ rejected by `validate` before any connection is made.
   target: { engine: 'aurora-postgresql', identifier: 'staging-shopfront' },
   policy: {},   // defaults: authoritative, protected_roles, unmanaged_databases
   roles: [
-    { name: 'grp_viewer' },
-    { name: 'grp_editor', member_of: ['grp_viewer'] },
+    {
+      name: 'grp_viewer',
+      grants: [
+        { on: { database: 'app' }, privileges: ['CONNECT'] },
+        { on: { schema: 'app.public' }, privileges: ['USAGE'] },
+        { on: { all_tables_in_schema: 'app.public' }, privileges: ['SELECT'] },
+      ],
+    },
+    {
+      name: 'grp_editor',
+      member_of: ['grp_viewer'],
+      grants: [
+        { on: { schema: 'app.public' }, privileges: ['USAGE', 'CREATE'] },
+        { on: { all_tables_in_schema: 'app.public' }, privileges: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
+      ],
+    },
     {
       name: 'migrator',
       login: true,
@@ -52,27 +66,28 @@ rejected by `validate` before any connection is made.
                                               // (DSQL instead: iam_principals: ['arn:aws:iam::...:role/...'])
       creates_objects_in: ['app.public'],     // derives ALTER DEFAULT PRIVILEGES FOR ROLE migrator
     },
-    { name: 'worker', login: true },
+    {
+      name: 'worker',
+      login: true,
+      grants: [{ on: { table: 'app.public.jobs' }, privileges: ['SELECT', 'INSERT'] }],
+      // default_privileges: [...] may be declared here too; normally derived from creates_objects_in
+    },
   ],
-  grants: [
-    { on: { database: 'app' },              to: 'grp_viewer', privileges: ['CONNECT'] },
-    { on: { schema: 'app.public' },         to: 'grp_editor', privileges: ['USAGE', 'CREATE'] },
-    { on: { all_tables_in_schema: 'app.public' }, to: 'grp_viewer', privileges: ['SELECT'] },
-    { on: { table: 'app.public.jobs' },     to: 'worker',     privileges: ['SELECT', 'INSERT'] },
-  ],
-  default_privileges: [],   // normally derived from creates_objects_in
 }
 ```
 
-Identifiers are `database.schema` and `database.schema.relation`.
+Identifiers are `database.schema` and `database.schema.relation`. Everything a
+role can do lives under that role: its memberships, its grants and the default
+privileges it receives. Object names never appear as keys.
 
 ### Why `creates_objects_in`
 
 `ALTER DEFAULT PRIVILEGES` only applies to objects created by the role named in
 `FOR ROLE`. Writing that by hand is how tables created by a migration role end
 up without the grants everyone expected. Declaring who creates objects lets
-pgroledef derive every `FOR ROLE` clause from the schema-wide grants, so the
-mistake cannot be expressed.
+pgroledef derive every `FOR ROLE` clause from the schema-wide grants of every
+other role, so the mistake cannot be expressed. `render` shows the derived
+entries under each grantee's `default_privileges`.
 
 ## What is reconciled
 

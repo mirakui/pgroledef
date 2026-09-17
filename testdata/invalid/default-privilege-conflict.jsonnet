@@ -1,4 +1,7 @@
 { version: 1, target: { engine: 'aurora-postgresql', identifier: 'x' }, policy: {},
-  roles: [{ name: 'viewer' }, { name: 'mig', login: true, creates_objects_in: ['db.public'] }],
-  grants: [{ on: { all_tables_in_schema: 'db.public' }, to: 'viewer', privileges: ['SELECT'] }],
-  default_privileges: [{ for_role: 'mig', in_schema: 'db.public', on: 'tables', to: 'viewer', privileges: ['SELECT', 'INSERT'] }] }
+  roles: [
+    { name: 'mig', login: true, creates_objects_in: ['db.public'] },
+    { name: 'viewer',
+      grants: [{ on: { all_tables_in_schema: 'db.public' }, privileges: ['SELECT'] }],
+      default_privileges: [{ for_role: 'mig', in_schema: 'db.public', on: 'tables', privileges: ['SELECT', 'INSERT'] }] },
+  ] }

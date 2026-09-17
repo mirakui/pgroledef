@@ -93,20 +93,20 @@ func TestDerivedDefaultPrivileges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, d := range cfg.DefaultPrivileges {
-		got = append(got, d.ForRole+"/"+string(d.On)+"/"+d.To)
+	for _, d := range cfg.FlatDefaultPrivileges() {
+		got = append(got, d.To+"/"+string(d.On)+"/for:"+d.ForRole)
 	}
 	want := []string{
-		"shopfront_migrator/sequences/grp_shopfront_writer",
-		"shopfront_migrator/tables/grp_shopfront_reader",
-		"shopfront_migrator/tables/grp_shopfront_writer",
+		"grp_shopfront_reader/tables/for:shopfront_migrator",
+		"grp_shopfront_writer/sequences/for:shopfront_migrator",
+		"grp_shopfront_writer/tables/for:shopfront_migrator",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("derived default privileges = %v, want %v", got, want)
 	}
-	for _, d := range cfg.DefaultPrivileges {
-		if d.ForRole != "shopfront_migrator" {
-			t.Fatalf("FOR ROLE must be the declared creator, got %q", d.ForRole)
+	for _, r := range cfg.Roles {
+		if r.Name == "shopfront_migrator" && len(r.DefaultPrivileges) != 0 {
+			t.Fatalf("the creator itself must not receive derived default privileges: %v", r.DefaultPrivileges)
 		}
 	}
 }

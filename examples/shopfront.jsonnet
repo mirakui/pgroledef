@@ -11,7 +11,13 @@
 local env = std.extVar('env');
 local db = 'shopfront';
 local schema = db + '.public';
-local workers = ['shopfront_worker', 'shopfront_worker_clone'];
+
+// Both worker users need identical privileges for alternating-user rotation.
+local workerGrants = [
+  { on: { database: db }, privileges: ['CONNECT'] },
+  { on: { schema: schema }, privileges: ['USAGE'] },
+  { on: { table: schema + '.job_queue' }, privileges: ['SELECT', 'INSERT', 'UPDATE'] },
+];
 
 {
   version: 1,
@@ -19,11 +25,26 @@ local workers = ['shopfront_worker', 'shopfront_worker_clone'];
   policy: {},
 
   roles: [
-    { name: 'grp_shopfront_reader' },
-    { name: 'grp_shopfront_writer', member_of: ['grp_shopfront_reader'] },
+    {
+      name: 'grp_shopfront_reader',
+      grants: [
+        { on: { database: db }, privileges: ['CONNECT'] },
+        { on: { schema: schema }, privileges: ['USAGE'] },
+        { on: { all_tables_in_schema: schema }, privileges: ['SELECT'] },
+      ],
+    },
+    {
+      name: 'grp_shopfront_writer',
+      member_of: ['grp_shopfront_reader'],
+      grants: [
+        { on: { schema: schema }, privileges: ['USAGE', 'CREATE'] },
+        { on: { all_tables_in_schema: schema }, privileges: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
+        { on: { all_sequences_in_schema: schema }, privileges: ['USAGE', 'SELECT'] },
+      ],
+    },
 
     // Tables are created by the migration role, so every schema-wide grant
-    // below is also turned into ALTER DEFAULT PRIVILEGES FOR ROLE shopfront_migrator.
+    // above is also turned into ALTER DEFAULT PRIVILEGES FOR ROLE shopfront_migrator.
     {
       name: 'shopfront_migrator',
       login: true,
@@ -31,30 +52,12 @@ local workers = ['shopfront_worker', 'shopfront_worker_clone'];
       creates_objects_in: [schema],
     },
     { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer', 'rds_iam'] },
-  ] + [
+
     // Passwords are managed elsewhere (e.g. a secrets manager); pgroledef only
     // guarantees the roles exist with LOGIN.
-    { name: w, login: true }
-    for w in workers
+    { name: 'shopfront_worker', login: true, grants: workerGrants },
+    { name: 'shopfront_worker_clone', login: true, grants: workerGrants },
   ] + (if env == 'production' then [
     { name: 'bi_readonly', login: true, member_of: ['grp_shopfront_reader'] },
   ] else []),
-
-  grants: [
-    { on: { database: db }, to: 'grp_shopfront_reader', privileges: ['CONNECT'] },
-    { on: { schema: schema }, to: 'grp_shopfront_reader', privileges: ['USAGE'] },
-    { on: { schema: schema }, to: 'grp_shopfront_writer', privileges: ['USAGE', 'CREATE'] },
-    { on: { all_tables_in_schema: schema }, to: 'grp_shopfront_reader', privileges: ['SELECT'] },
-    { on: { all_tables_in_schema: schema }, to: 'grp_shopfront_writer', privileges: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
-    { on: { all_sequences_in_schema: schema }, to: 'grp_shopfront_writer', privileges: ['USAGE', 'SELECT'] },
-  ] + std.flattenArrays([
-    [
-      { on: { database: db }, to: w, privileges: ['CONNECT'] },
-      { on: { schema: schema }, to: w, privileges: ['USAGE'] },
-      { on: { table: schema + '.job_queue' }, to: w, privileges: ['SELECT', 'INSERT', 'UPDATE'] },
-    ]
-    for w in workers
-  ]),
-
-  default_privileges: [],
 }
