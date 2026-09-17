@@ -28,9 +28,11 @@ func main() {
 	root := &cobra.Command{
 		Use:           "pgroledef",
 		Short:         "Declarative, authoritative role management for Aurora PostgreSQL / Aurora DSQL",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetVersionTemplate(versionLine() + "\n")
 	root.PersistentFlags().StringVarP(&flagFile, "file", "f", "", "jsonnet file to evaluate (required)")
 	root.PersistentFlags().StringArrayVar(&flagExtStrs, "ext-str", nil, "external string variable KEY=VALUE (repeatable)")
 	root.PersistentFlags().StringArrayVarP(&flagJPaths, "jpath", "J", nil, "additional jsonnet import path (repeatable)")
@@ -113,7 +115,7 @@ func main() {
 		c.Flags().StringVar(&flagDSN, "dsn", os.Getenv("PGROLEDEF_DSN"), "PostgreSQL connection string (default $PGROLEDEF_DSN, then libpq PG* env vars)")
 	}
 
-	root.AddCommand(render, validate, planCmd, applyCmd)
+	root.AddCommand(render, validate, planCmd, applyCmd, newVersionCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

@@ -29,3 +29,15 @@ jobs:
         env:
           PGROLEDEF_TEST_DSN: postgres://postgres:postgres@localhost:5432/postgres
       - run: golangci-lint run ./...
+
+  release-dryrun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
