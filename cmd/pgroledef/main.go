@@ -174,12 +174,14 @@ func printPlan(cmd *cobra.Command, p *plan.Plan) {
 		fmt.Fprintln(out, "No changes. The database matches the declaration.")
 		return
 	}
+	p.WriteDiff(out)
+	fmt.Fprintln(out, "SQL:")
 	for _, db := range p.Databases() {
 		label := db
 		if label == "" {
 			label = "cluster"
 		}
-		fmt.Fprintf(out, "-- %s\n", label)
+		fmt.Fprintf(out, "  -- %s\n", label)
 		for _, s := range p.Statements {
 			if s.Database != db {
 				continue
@@ -188,7 +190,7 @@ func printPlan(cmd *cobra.Command, p *plan.Plan) {
 			if s.Destructive {
 				mark = "-"
 			}
-			fmt.Fprintf(out, "%s %s;", mark, s.SQL)
+			fmt.Fprintf(out, "  %s %s;", mark, s.SQL)
 			if s.Note != "" {
 				fmt.Fprintf(out, "  -- %s", s.Note)
 			}
