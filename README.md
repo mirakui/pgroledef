@@ -89,6 +89,16 @@ Unlike `apply`, the script has no transaction of its own, so run it with
 `ON_ERROR_STOP=1`. The file is written even when there is no diff (comments
 only), and `--out` does not change the exit code.
 
+One hazard is specific to the script. To set default privileges on behalf of a
+creator role, the plan borrows an inheriting membership in it and hands it back
+two statements later. `apply` runs those inside one transaction on Aurora, so a
+failure rolls the borrow back; the script does not, so a failure in between
+leaves the executing user inheriting everything that creator has — including
+`rds_iam`, which disables password authentication for it. If that happens,
+reconnect with `--auth rds-iam` (the borrow just made that possible) and run
+`plan` again: it proposes handing the borrow back. Wrapping the script in
+`BEGIN; … COMMIT;` avoids the window on Aurora.
+
 ## Connecting with AWS IAM authentication
 
 `plan` and `apply` take `--auth` to authenticate with an IAM token instead of a
@@ -152,6 +162,21 @@ and `AWS IAM GRANT` are all DDL there, so a role plan cannot be applied
 atomically. `plan` says so, and `apply` logs every statement as it runs, so the
 point of failure is the last line printed. Re-run after fixing the cause: the
 plan is derived from the live catalog, so it converges.
+
+One consequence is worth knowing about. `ALTER DEFAULT PRIVILEGES FOR ROLE`
+needs an inheriting membership in the creator role, so `apply` borrows one and
+hands it straight back. Where that pair is not atomic, a failure in between
+leaves the borrow in place — and nothing would otherwise notice, because the
+next `plan` would see the membership and decide no borrow is needed. `plan`
+therefore proposes handing a leftover borrow back, as a destructive statement:
+
+```
+- REVOKE INHERIT OPTION FOR "shopfront_migrator" FROM CURRENT_USER;  -- membership borrowed by an earlier apply and never returned
+```
+
+If you granted the executing user that membership on purpose, declare the
+privileges it carries instead; pgroledef treats an inheriting membership in a
+creator role as its own.
 
 A role's IAM mapping has to be revoked before the role can be dropped, which
 matters if you remove a role by hand — DSQL reports it as

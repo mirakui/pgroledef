@@ -36,14 +36,17 @@ func Apply(ctx context.Context, p *Plan, connector catalog.Connector, log io.Wri
 		err = func() error {
 			defer conn.Close(ctx)
 			if p.Dialect.ApplyMode == ApplyPerStatementTx {
-				return applyStatements(ctx, conn, p, db, log)
+				return applyStatements(ctx, conn, p, db, log, occRetries)
 			}
 			tx, err := conn.Begin(ctx)
 			if err != nil {
 				return err
 			}
 			defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
-			if err := applyStatements(ctx, tx, p, db, log); err != nil {
+			// No retry inside a transaction: a serialization failure has
+			// already aborted it, so every retry would answer 25P02 and that
+			// error would replace the real one.
+			if err := applyStatements(ctx, tx, p, db, log, 0); err != nil {
 				return err
 			}
 			return tx.Commit(ctx)
@@ -60,24 +63,24 @@ type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-func applyStatements(ctx context.Context, ex execer, p *Plan, db string, log io.Writer) error {
+func applyStatements(ctx context.Context, ex execer, p *Plan, db string, log io.Writer, retries int) error {
 	for _, s := range p.Statements {
 		if s.Database != db {
 			continue
 		}
 		fmt.Fprintf(log, "[%s] %s;\n", dbLabel(db), s.SQL)
-		if err := execRetrying(ctx, ex, s.SQL); err != nil {
+		if err := execRetrying(ctx, ex, s.SQL, retries); err != nil {
 			return fmt.Errorf("execute %q in %s: %w", s.SQL, dbLabel(db), err)
 		}
 	}
 	return nil
 }
 
-func execRetrying(ctx context.Context, ex execer, sql string) error {
+func execRetrying(ctx context.Context, ex execer, sql string, retries int) error {
 	var err error
 	for attempt := 0; ; attempt++ {
 		_, err = ex.Exec(ctx, sql)
-		if err == nil || !isSerializationFailure(err) || attempt == occRetries {
+		if err == nil || !isSerializationFailure(err) || attempt == retries {
 			return err
 		}
 		// Catalog changes race with each other; back off and let the loser retry.

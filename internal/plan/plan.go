@@ -220,7 +220,7 @@ func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
 		}
 	}
 	p := &Plan{Dialect: DialectFor(cfg.Target.Engine)}
-	d := &differ{cfg: cfg, st: st, p: p, dialect: p.Dialect}
+	d := &differ{cfg: cfg, st: st, p: p, dialect: p.Dialect, created: map[string]bool{}}
 	if err := d.roles(); err != nil {
 		return nil, err
 	}
@@ -243,6 +243,10 @@ type differ struct {
 	st      *catalog.State
 	p       *Plan
 	dialect Dialect
+	// created are the roles this plan creates. CREATE ROLE by a non-superuser
+	// leaves the executing user a member WITH ADMIN OPTION, which the catalog
+	// snapshot predates.
+	created map[string]bool
 }
 
 func (d *differ) managed(role string) bool {
@@ -278,6 +282,7 @@ func (d *differ) roles() error {
 				login = "LOGIN"
 			}
 			d.p.add("", fmt.Sprintf("CREATE ROLE %s WITH %s", ident(name), login), false, "")
+			d.created[name] = true
 			have = &catalog.Role{Name: name, Login: want.Login, MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}}
 			rd := d.roleDiff(name)
 			rd.Created = true
@@ -473,9 +478,14 @@ func (d *differ) grants() error {
 		if matchesAny(dbName, d.cfg.Policy.UnmanagedDatabases) {
 			continue
 		}
-		for grantee, ps := range db.ACL {
-			if d.managed(grantee) && grantee != db.Owner {
-				actual[grantKey{objectKey{Database: dbName, Kind: "database"}, grantee}] = ps
+		// Without an ON DATABASE form there is nothing to revoke with, and
+		// emitting one anyway would fail mid-apply on an engine that cannot
+		// roll the rest back.
+		if d.dialect.DatabaseGrants {
+			for grantee, ps := range db.ACL {
+				if d.managed(grantee) && grantee != db.Owner {
+					actual[grantKey{objectKey{Database: dbName, Kind: "database"}, grantee}] = ps
+				}
 			}
 		}
 		for _, s := range db.Schemas {
@@ -710,16 +720,55 @@ func (d *differ) defaultPrivileges() error {
 				ident(k.ForRole), ident(k.Schema), privList(extra), objType, ident(k.Grantee)), true, "default privilege not declared")
 		}
 		if wrap {
-			// Give back exactly what was borrowed: drop the whole membership
-			// only when there was none to begin with.
-			undo := fmt.Sprintf("REVOKE %s FROM CURRENT_USER", ident(k.ForRole))
-			if me := d.st.Roles[d.st.CurrentUser]; me != nil && me.MemberOf[k.ForRole] {
-				undo = fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(k.ForRole))
-			}
-			d.p.add(k.Database, undo, false, "undo temporary membership")
+			d.p.add(k.Database, d.undoBorrow(k.ForRole), false, "undo temporary membership")
 		}
 	}
+	d.releaseStaleBorrows(sorted)
 	return nil
+}
+
+// undoBorrow gives back exactly what the borrow took: the whole membership
+// only when there was none to begin with. A role this plan creates counts as
+// having one, because CREATE ROLE already made the executing user a member
+// WITH ADMIN OPTION - revoking that would leave it unable to administer a role
+// it created itself.
+func (d *differ) undoBorrow(creator string) string {
+	me := d.st.Roles[d.st.CurrentUser]
+	if d.created[creator] || (me != nil && me.MemberOf[creator]) {
+		return fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(creator))
+	}
+	return fmt.Sprintf("REVOKE %s FROM CURRENT_USER", ident(creator))
+}
+
+// releaseStaleBorrows returns an inheriting membership a previous apply took
+// but never gave back. Where apply is not atomic a failure between the borrow
+// and its undo leaves one behind, and nothing else would ever notice: the next
+// plan sees the membership, decides no borrow is needed, and so never emits
+// the undo either. The statements above still rely on the membership, so this
+// runs after them, in the last database that used it.
+func (d *differ) releaseStaleBorrows(keys []defaultKey) {
+	me := d.st.Roles[d.st.CurrentUser]
+	if me == nil || me.Super {
+		return
+	}
+	last := map[string]string{}
+	for _, k := range keys {
+		if k.ForRole == d.st.CurrentUser || !me.InheritsFrom[k.ForRole] {
+			continue
+		}
+		if db, seen := last[k.ForRole]; !seen || k.Database > db {
+			last[k.ForRole] = k.Database
+		}
+	}
+	creators := make([]string, 0, len(last))
+	for creator := range last {
+		creators = append(creators, creator)
+	}
+	sort.Strings(creators)
+	for _, creator := range creators {
+		d.p.add(last[creator], fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(creator)), true,
+			"membership borrowed by an earlier apply and never returned")
+	}
 }
 
 // needsCreatorMembership reports whether the executing user must be granted the
