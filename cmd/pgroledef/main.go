@@ -99,7 +99,7 @@ func main() {
 			if p.Empty() {
 				return nil
 			}
-			if hasDestructive(p) && !allowDestroy {
+			if p.NeedsAllowDestroy() && !allowDestroy {
 				return fmt.Errorf("plan contains destructive statements (REVOKE/NOLOGIN); re-run with --allow-destroy to apply them")
 			}
 			if !autoApprove {
@@ -222,15 +222,6 @@ func writePlanSQL(cmd *cobra.Command, p *plan.Plan) error {
 	return nil
 }
 
-func hasDestructive(p *plan.Plan) bool {
-	for _, s := range p.Statements {
-		if s.Destructive {
-			return true
-		}
-	}
-	return false
-}
-
 func printPlan(cmd *cobra.Command, p *plan.Plan) {
 	out := cmd.OutOrStdout()
 	if p.Empty() {
@@ -238,6 +229,10 @@ func printPlan(cmd *cobra.Command, p *plan.Plan) {
 		return
 	}
 	p.WriteDiff(out)
+	if !p.Dialect.Atomic() {
+		fmt.Fprintf(out, "Note: %s applies one statement per transaction, so a failure leaves\n"+
+			"      the statements before it in place. Re-run to converge.\n\n", p.Dialect.Engine)
+	}
 	fmt.Fprintln(out, "SQL:")
 	for _, db := range p.Databases() {
 		label := db

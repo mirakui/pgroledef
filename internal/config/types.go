@@ -156,9 +156,27 @@ type DefaultPrivilege struct {
 	Privileges []Privilege
 }
 
-// DefaultPolicy returns the policy defaults applied when a field is omitted.
-func DefaultPolicy() Policy {
+// DSQLDatabase is the only database an Aurora DSQL cluster has. It is created
+// with the cluster and CREATE DATABASE is rejected.
+const DSQLDatabase = "postgres"
+
+// DefaultPolicy returns the Aurora PostgreSQL policy defaults.
+func DefaultPolicy() Policy { return DefaultPolicyFor(EngineAuroraPostgres) }
+
+// DefaultPolicyFor returns the policy defaults applied when a field is omitted.
+// The two engines ship different roles, and DSQL has a single database that is
+// always the target, so neither list can be shared.
+func DefaultPolicyFor(engine Engine) Policy {
 	t := true
+	if engine == EngineDSQL {
+		return Policy{
+			Authoritative: &t,
+			// dbowner owns the postgres database and is the cluster's only
+			// superuser; admin is predefined and unmodifiable.
+			ProtectedRoles:     []string{"admin", "dbowner", "pg_*", "awsdsql_*"},
+			UnmanagedDatabases: nil,
+		}
+	}
 	return Policy{
 		Authoritative:      &t,
 		ProtectedRoles:     []string{"postgres", "rdsadmin", "rds_*", "pg_*", "admin"},

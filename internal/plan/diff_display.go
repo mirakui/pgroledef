@@ -22,6 +22,11 @@ type RoleDiff struct {
 	MembersBefore  []string
 	MembersAfter   []string
 
+	// Principals are the IAM ARNs mapped to the role; DSQL only.
+	PrincipalsChanged bool
+	PrincipalsBefore  []string
+	PrincipalsAfter   []string
+
 	Privileges []PrivDiff
 }
 
@@ -36,7 +41,7 @@ type PrivDiff struct {
 }
 
 func (d *RoleDiff) empty() bool {
-	return !d.Created && !d.LoginChanged && !d.MembersChanged && len(d.Privileges) == 0
+	return !d.Created && !d.LoginChanged && !d.MembersChanged && !d.PrincipalsChanged && len(d.Privileges) == 0
 }
 
 // roleDiff returns the diff entry for role, creating it on first use. Entries
@@ -144,6 +149,13 @@ func (p *Plan) WriteDiff(w io.Writer) {
 				fmt.Fprintf(w, "  + member_of: %s\n", list(rd.MembersAfter))
 			} else {
 				fmt.Fprintf(w, "  ~ member_of: %s -> %s\n", list(rd.MembersBefore), list(rd.MembersAfter))
+			}
+		}
+		if rd.PrincipalsChanged {
+			if rd.Created {
+				fmt.Fprintf(w, "  + iam_principals: %s\n", list(rd.PrincipalsAfter))
+			} else {
+				fmt.Fprintf(w, "  ~ iam_principals: %s -> %s\n", list(rd.PrincipalsBefore), list(rd.PrincipalsAfter))
 			}
 		}
 		for _, pd := range rd.Privileges {

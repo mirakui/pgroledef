@@ -23,7 +23,7 @@ func Decode(data []byte) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
-	d := DefaultPolicy()
+	d := DefaultPolicyFor(c.Target.Engine)
 	if c.Policy.Authoritative == nil {
 		c.Policy.Authoritative = d.Authoritative
 	}

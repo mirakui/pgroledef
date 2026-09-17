@@ -38,6 +38,15 @@ type Role struct {
 	Login    bool
 	Super    bool
 	MemberOf map[string]bool
+	// InheritsFrom is the subset of MemberOf granted WITH INHERIT. Only those
+	// memberships carry the group's privileges; a membership granted with
+	// ADMIN alone (what CREATE ROLE gives a non-superuser creator) does not,
+	// and is not enough for ALTER DEFAULT PRIVILEGES FOR ROLE.
+	InheritsFrom map[string]bool
+	// IAMPrincipals holds the IAM ARNs mapped to this role on Aurora DSQL.
+	// Always empty on Aurora PostgreSQL, which maps IAM identities through
+	// rds_iam membership instead.
+	IAMPrincipals map[string]bool
 }
 
 type Relation struct {
@@ -122,7 +131,7 @@ func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 		return nil, fmt.Errorf("read pg_roles: %w", err)
 	}
 	for rows.Next() {
-		r := &Role{MemberOf: map[string]bool{}}
+		r := &Role{MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}, IAMPrincipals: map[string]bool{}}
 		if err := rows.Scan(&r.Name, &r.Login, &r.Super); err != nil {
 			return nil, err
 		}
@@ -134,7 +143,7 @@ func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 	}
 
 	rows, err = conn.Query(ctx, `
-		SELECT m.rolname AS member, g.rolname AS grp
+		SELECT m.rolname AS member, g.rolname AS grp, am.inherit_option
 		FROM pg_auth_members am
 		JOIN pg_roles m ON m.oid = am.member
 		JOIN pg_roles g ON g.oid = am.roleid`)
@@ -143,11 +152,15 @@ func ReadCluster(ctx context.Context, conn *pgx.Conn) (*State, error) {
 	}
 	for rows.Next() {
 		var member, grp string
-		if err := rows.Scan(&member, &grp); err != nil {
+		var inherit bool
+		if err := rows.Scan(&member, &grp, &inherit); err != nil {
 			return nil, err
 		}
 		if r := st.Roles[member]; r != nil {
 			r.MemberOf[grp] = true
+			if inherit {
+				r.InheritsFrom[grp] = true
+			}
 		}
 	}
 	rows.Close()
@@ -293,3 +306,23 @@ func (r *Relation) IsTableLike() bool { return strings.ContainsRune("rvmpf", run
 
 // IsSequence reports whether the relation is a sequence.
 func (r *Relation) IsSequence() bool { return r.Kind == 'S' }
+
+// ReadIAMPrincipals fills Role.IAMPrincipals from sys.iam_pg_role_mappings.
+// Aurora DSQL only; the view does not exist on Aurora PostgreSQL.
+func ReadIAMPrincipals(ctx context.Context, conn *pgx.Conn, st *State) error {
+	rows, err := conn.Query(ctx, `SELECT pg_role_name, arn FROM sys.iam_pg_role_mappings`)
+	if err != nil {
+		return fmt.Errorf("read sys.iam_pg_role_mappings: %w", err)
+	}
+	for rows.Next() {
+		var role, arn string
+		if err := rows.Scan(&role, &arn); err != nil {
+			return err
+		}
+		if r := st.Roles[role]; r != nil {
+			r.IAMPrincipals[arn] = true
+		}
+	}
+	rows.Close()
+	return rows.Err()
+}
