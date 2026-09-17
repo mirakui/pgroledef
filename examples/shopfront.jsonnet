@@ -3,8 +3,8 @@
 //
 // Role layout:
 //   grp_shopfront_reader / grp_shopfront_writer  NOLOGIN permission groups
-//   shopfront_migrator   runs schema migrations (IAM auth) and therefore owns the tables
-//   shopfront_api        the application server (IAM auth)
+//   shopfront_migrator   runs schema migrations (IAM auth via rds_iam) and therefore owns the tables
+//   shopfront_api        the application server (IAM auth via rds_iam)
 //   shopfront_worker*    background workers using a rotated password (two users
 //                        for alternating-user rotation), limited to the job queue
 //   bi_readonly          a BI tool with a static password, production only
@@ -27,11 +27,10 @@ local workers = ['shopfront_worker', 'shopfront_worker_clone'];
     {
       name: 'shopfront_migrator',
       login: true,
-      member_of: ['grp_shopfront_writer'],
-      iam: true,
+      member_of: ['grp_shopfront_writer', 'rds_iam'],
       creates_objects_in: [schema],
     },
-    { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer'], iam: true },
+    { name: 'shopfront_api', login: true, member_of: ['grp_shopfront_writer', 'rds_iam'] },
   ] + [
     // Passwords are managed elsewhere (e.g. a secrets manager); pgroledef only
     // guarantees the roles exist with LOGIN.

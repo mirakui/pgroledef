@@ -1,1 +1,1 @@
-iam: true requires login: true
+member_of "rds_iam" requires login: true

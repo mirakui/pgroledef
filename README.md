@@ -48,8 +48,8 @@ rejected by `validate` before any connection is made.
     {
       name: 'migrator',
       login: true,
-      member_of: ['grp_editor'],
-      iam: true,                              // Aurora: GRANT rds_iam; DSQL adds iam_principals: [arn]
+      member_of: ['grp_editor', 'rds_iam'],   // Aurora IAM auth is just membership in rds_iam
+                                              // (DSQL instead: iam_principals: ['arn:aws:iam::...:role/...'])
       creates_objects_in: ['app.public'],     // derives ALTER DEFAULT PRIVILEGES FOR ROLE migrator
     },
     { name: 'worker', login: true },
@@ -79,7 +79,7 @@ mistake cannot be expressed.
 For every role declared in the file:
 
 - existence and `LOGIN` / `NOLOGIN`
-- role memberships (`GRANT role TO role`), including `rds_iam` when `iam: true`
+- role memberships (`GRANT role TO role`); Aurora IAM authentication is plain membership in `rds_iam`
 - privileges on databases, schemas, tables and sequences, in every database
   not matched by `policy.unmanaged_databases`; undeclared privileges are revoked
 - default privileges where the declared role is the creator or the grantee

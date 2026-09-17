@@ -61,8 +61,7 @@ type Role struct {
 	Name             string            `json:"name"`
 	Login            bool              `json:"login"`
 	MemberOf         []string          `json:"member_of,omitempty"`
-	IAM              bool              `json:"iam"`
-	IAMPrincipals    []string          `json:"iam_principals,omitempty"`
+	IAMPrincipals    []string          `json:"iam_principals,omitempty"` // DSQL: AWS IAM GRANT targets
 	Settings         map[string]string `json:"settings,omitempty"`
 	CreatesObjectsIn []string          `json:"creates_objects_in,omitempty"`
 }

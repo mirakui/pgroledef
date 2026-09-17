@@ -65,7 +65,7 @@ func TestReconcileRoundTrip(t *testing.T) {
 		Roles: []config.Role{
 			{Name: viewer},
 			{Name: editor, MemberOf: []string{viewer}},
-			{Name: app, Login: true, MemberOf: []string{editor}, IAM: true, CreatesObjectsIn: []string{schema}},
+			{Name: app, Login: true, MemberOf: []string{editor, "rds_iam"}, CreatesObjectsIn: []string{schema}},
 		},
 		Grants: []config.Grant{
 			{On: config.GrantTarget{Database: db}, To: viewer, Privileges: []config.Privilege{config.PrivConnect}},
@@ -115,7 +115,7 @@ func TestReconcileRoundTrip(t *testing.T) {
 	for i := range tight.Roles {
 		if tight.Roles[i].Name == app {
 			tight.Roles[i].Login = false
-			tight.Roles[i].IAM = false
+			tight.Roles[i].MemberOf = []string{editor}
 		}
 	}
 	tightN := validate(t, &tight)

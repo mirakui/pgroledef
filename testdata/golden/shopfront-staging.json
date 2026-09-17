@@ -22,24 +22,22 @@
   "roles": [
     {
       "name": "grp_shopfront_reader",
-      "login": false,
-      "iam": false
+      "login": false
     },
     {
       "name": "grp_shopfront_writer",
       "login": false,
       "member_of": [
         "grp_shopfront_reader"
-      ],
-      "iam": false
+      ]
     },
     {
       "name": "shopfront_migrator",
       "login": true,
       "member_of": [
-        "grp_shopfront_writer"
+        "grp_shopfront_writer",
+        "rds_iam"
       ],
-      "iam": true,
       "creates_objects_in": [
         "shopfront.public"
       ]
@@ -48,19 +46,17 @@
       "name": "shopfront_api",
       "login": true,
       "member_of": [
-        "grp_shopfront_writer"
-      ],
-      "iam": true
+        "grp_shopfront_writer",
+        "rds_iam"
+      ]
     },
     {
       "name": "shopfront_worker",
-      "login": true,
-      "iam": false
+      "login": true
     },
     {
       "name": "shopfront_worker_clone",
-      "login": true,
-      "iam": false
+      "login": true
     }
   ],
   "grants": [

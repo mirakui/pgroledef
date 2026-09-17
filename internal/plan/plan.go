@@ -213,11 +213,11 @@ func (d *differ) roles() error {
 		for _, m := range want.MemberOf {
 			desiredMembers[m] = true
 		}
-		if want.IAM {
-			if d.st.Roles["rds_iam"] == nil {
-				return fmt.Errorf("role %q: iam: true requires the rds_iam role, which does not exist on this server", name)
+		// Groups may be declared in the file or, like Aurora's rds_iam, provided by the server.
+		for g := range desiredMembers {
+			if _, declared := d.cfg.Role(g); !declared && d.st.Roles[g] == nil {
+				return fmt.Errorf("role %q: member_of %q is neither declared nor present on this server", name, g)
 			}
-			desiredMembers["rds_iam"] = true
 		}
 		have := d.st.Roles[name]
 		if have == nil {

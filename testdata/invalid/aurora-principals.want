@@ -1,1 +1,1 @@
-iam_principals must be empty on aurora-postgresql
+iam_principals is dsql-only

@@ -120,7 +120,7 @@ func (v *validator) roles() {
 			switch {
 			case m == rdsIAM:
 				if c.Target.Engine == EngineDSQL {
-					v.errf("role %q: member_of %q is Aurora-only; use iam.principals on dsql", name, rdsIAM)
+					v.errf("role %q: member_of %q is Aurora-only; use iam_principals on dsql", name, rdsIAM)
 				}
 			case !v.roleExists(m):
 				v.errf("role %q: member_of references undeclared role %q", name, m)
@@ -133,23 +133,16 @@ func (v *validator) roles() {
 				v.errf("role %q: iam_principals entry %q is not an IAM role ARN", name, p)
 			}
 		}
-		if !r.IAM && len(r.IAMPrincipals) > 0 {
-			v.errf("role %q: iam_principals requires iam: true", name)
-		}
-		if r.IAM && !r.Login {
-			v.errf("role %q: iam: true requires login: true (IAM authentication is for login roles)", name)
-		}
-		if r.IAM {
-			switch c.Target.Engine {
-			case EngineDSQL:
-				if len(r.IAMPrincipals) == 0 {
-					v.errf("role %q: dsql requires at least one iam_principals entry (AWS IAM GRANT target)", name)
-				}
-			case EngineAuroraPostgres:
-				if len(r.IAMPrincipals) > 0 {
-					v.errf("role %q: iam_principals must be empty on aurora-postgresql (rds-db:connect is managed in IAM/Terraform)", name)
-				}
+		if len(r.IAMPrincipals) > 0 {
+			if c.Target.Engine == EngineAuroraPostgres {
+				v.errf("role %q: iam_principals is dsql-only; on aurora-postgresql use member_of: [%q] and manage rds-db:connect in IAM", name, rdsIAM)
 			}
+			if !r.Login {
+				v.errf("role %q: iam_principals requires login: true (IAM authentication is for login roles)", name)
+			}
+		}
+		if hasMember(r.MemberOf, rdsIAM) && !r.Login {
+			v.errf("role %q: member_of %q requires login: true (IAM authentication is for login roles)", name, rdsIAM)
 		}
 		for _, s := range r.CreatesObjectsIn {
 			if _, err := ParseSchema(s); err != nil {
@@ -323,4 +316,13 @@ func samePrivileges(a, b []Privilege) bool {
 func IsValidationError(err error) bool {
 	var ve *ValidationError
 	return errors.As(err, &ve)
+}
+
+func hasMember(list []string, want string) bool {
+	for _, m := range list {
+		if m == want {
+			return true
+		}
+	}
+	return false
 }
