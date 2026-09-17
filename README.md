@@ -197,3 +197,7 @@ go test ./internal/config -update   # refresh golden files after reviewing the d
 
 Conventions and the pitfalls worth knowing before changing anything are in
 [AGENTS.md](AGENTS.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
