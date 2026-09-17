@@ -223,6 +223,9 @@ mise run lint
 go test ./internal/config -update   # refresh golden files after reviewing the diff
 ```
 
+Conventions and the pitfalls worth knowing before changing anything are in
+[AGENTS.md](AGENTS.md).
+
 ### Release
 
 Releases are cut by pushing a SemVer tag with a `v` prefix; the `release`
