@@ -34,7 +34,10 @@ func TestReconcileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	// Registered first so it runs last: t.Cleanup is LIFO and runs after this
+	// function's defers, so closing here with defer would leave every cleanup
+	// statement below running on a closed connection.
+	t.Cleanup(func() { admin.Close(ctx) }) //nolint:errcheck // nothing to do about a failed close
 
 	var versionNum int
 	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&versionNum); err != nil {

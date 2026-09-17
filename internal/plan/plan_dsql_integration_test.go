@@ -42,7 +42,8 @@ func TestDSQLReconcileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	// Registered first so it runs last; see the note in the Aurora test.
+	t.Cleanup(func() { admin.Close(ctx) }) //nolint:errcheck // nothing to do about a failed close
 
 	suffix := fmt.Sprintf("t%d", time.Now().UnixNano()%1e9)
 	nsp := "pgroledef_" + suffix
@@ -52,13 +53,21 @@ func TestDSQLReconcileRoundTrip(t *testing.T) {
 	mustExec(t, admin, `CREATE SCHEMA `+ident(nsp))
 	mustExec(t, admin, `CREATE TABLE `+ident(nsp)+"."+ident("t1")+` (id int PRIMARY KEY)`)
 	t.Cleanup(func() {
+		// DROP OWNED BY is unsupported here ("unsupported statement:
+		// DropOwned"), so the schema has to go first: it takes the schema and
+		// table ACLs and the pg_default_acl rows with it, and a role that
+		// still holds any of those cannot be dropped.
 		_, _ = admin.Exec(ctx, `DROP TABLE `+ident(nsp)+"."+ident("t1"))
 		_, _ = admin.Exec(ctx, `DROP SCHEMA `+ident(nsp))
 		for _, r := range []string{app, editor, viewer} {
 			if iamARN != "" {
 				_, _ = admin.Exec(ctx, `AWS IAM REVOKE `+ident(r)+` FROM '`+iamARN+`'`)
 			}
-			_, _ = admin.Exec(ctx, `DROP ROLE `+ident(r))
+			if _, err := admin.Exec(ctx, `DROP ROLE `+ident(r)); err != nil {
+				// Leaking a role is not a test failure, but it is worth saying
+				// so: the cluster is shared and roles accumulate.
+				t.Logf("could not drop role %s, please remove it by hand: %v", r, err)
+			}
 		}
 	})
 
