@@ -194,3 +194,7 @@ mise run test:all             # tests against all three
 mise run lint
 go test ./internal/config -update   # refresh golden files after reviewing the diff
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
