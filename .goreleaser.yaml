@@ -33,15 +33,10 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
-      - "^ci:"
-      - "Merge pull request"
+  # GitHub's own generator: one line per merged pull request, crediting the
+  # author by GitHub handle. It ignores goreleaser's sort/filters, and skips
+  # merge commits and direct pushes that have no pull request.
+  use: github-native
 
 release:
   draft: false
