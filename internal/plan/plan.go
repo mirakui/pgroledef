@@ -27,6 +27,9 @@ type Statement struct {
 // Plan is the ordered set of statements grouped by the database they run in.
 type Plan struct {
 	Statements []Statement
+	// RoleDiffs is the same change set expressed in the shape of the
+	// declaration, one entry per role, for human review.
+	RoleDiffs []RoleDiff
 }
 
 func (p *Plan) Empty() bool { return len(p.Statements) == 0 }
@@ -185,6 +188,11 @@ func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
 	if err := d.defaultPrivileges(); err != nil {
 		return nil, err
 	}
+	order := make(map[string]int, len(cfg.Roles))
+	for i, r := range cfg.Roles {
+		order[r.Name] = i
+	}
+	p.sortRoleDiffs(order)
 	return p, nil
 }
 
@@ -203,6 +211,7 @@ func (d *differ) roles() error {
 	type pending struct {
 		name          string
 		grant, revoke []string
+		before, after []string
 	}
 	var later []pending
 	// Pass 1: existence and login flag, so memberships in pass 2 can reference
@@ -227,12 +236,17 @@ func (d *differ) roles() error {
 			}
 			d.p.add("", fmt.Sprintf("CREATE ROLE %s WITH %s", ident(name), login), false, "")
 			have = &catalog.Role{Name: name, Login: want.Login, MemberOf: map[string]bool{}}
+			rd := d.roleDiff(name)
+			rd.Created = true
+			rd.LoginChanged, rd.LoginAfter = true, want.Login
 		} else if have.Login != want.Login {
 			flag := "NOLOGIN"
 			if want.Login {
 				flag = "LOGIN"
 			}
 			d.p.add("", fmt.Sprintf("ALTER ROLE %s WITH %s", ident(name), flag), !want.Login, "")
+			rd := d.roleDiff(name)
+			rd.LoginChanged, rd.LoginBefore, rd.LoginAfter = true, have.Login, want.Login
 		}
 		pd := pending{name: name}
 		for g := range desiredMembers {
@@ -247,10 +261,22 @@ func (d *differ) roles() error {
 		}
 		sort.Strings(pd.grant)
 		sort.Strings(pd.revoke)
+		for g := range have.MemberOf {
+			pd.before = append(pd.before, g)
+		}
+		for g := range desiredMembers {
+			pd.after = append(pd.after, g)
+		}
+		sort.Strings(pd.before)
+		sort.Strings(pd.after)
 		later = append(later, pd)
 	}
 	// Pass 2: memberships.
 	for _, pd := range later {
+		if len(pd.grant) > 0 || len(pd.revoke) > 0 {
+			rd := d.roleDiff(pd.name)
+			rd.MembersChanged, rd.MembersBefore, rd.MembersAfter = true, pd.before, pd.after
+		}
 		for _, g := range pd.grant {
 			d.p.add("", fmt.Sprintf("GRANT %s TO %s", ident(g), ident(pd.name)), false, "")
 		}
@@ -458,6 +484,10 @@ func (d *differ) grants() error {
 		}
 		out = append(out, ranked{2, Statement{Database: sg.Database, SQL: fmt.Sprintf("GRANT %s ON %s %s TO %s",
 			privList(emittedWide[sg].Sorted()), target, ident(sg.Schema), ident(sg.Grantee))}})
+		d.addPrivDiff(sg.Grantee, PrivDiff{
+			Label: fmt.Sprintf("%s %s.%s", target, sg.Database, sg.Schema),
+			Added: emittedWide[sg].Sorted(),
+		})
 	}
 	for _, k := range sorted {
 		missing, extra := diffSets(desired[k], actual[k])
@@ -466,6 +496,7 @@ func (d *differ) grants() error {
 			missing = without(missing, emittedWide[sg])
 		}
 		rank := map[string]int{"database": 0, "schema": 1, "table": 3, "sequence": 4}[k.Object.Kind]
+		d.addPrivDiff(k.Grantee, PrivDiff{Label: k.Object.displayTarget(), Added: missing, Removed: extra})
 		if len(missing) > 0 {
 			out = append(out, ranked{rank, Statement{Database: k.Object.Database,
 				SQL: fmt.Sprintf("GRANT %s ON %s TO %s", privList(missing), k.Object.sqlTarget(), ident(k.Grantee))}})
@@ -560,6 +591,17 @@ func (d *differ) defaultPrivileges() error {
 			continue
 		}
 		objType := strings.ToUpper(k.ObjType)
+		owner := k.Grantee
+		if !d.managed(owner) {
+			owner = k.ForRole
+		}
+		d.addPrivDiff(owner, PrivDiff{
+			Default: true,
+			Label: fmt.Sprintf("FOR ROLE %s IN SCHEMA %s.%s ON %s TO %s",
+				k.ForRole, k.Database, k.Schema, objType, k.Grantee),
+			Added:   missing,
+			Removed: extra,
+		})
 		wrap := d.needsCreatorMembership(k.ForRole)
 		if wrap {
 			d.p.add(k.Database, fmt.Sprintf("GRANT %s TO CURRENT_USER", ident(k.ForRole)), false,
