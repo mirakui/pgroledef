@@ -238,6 +238,10 @@ func printPlan(cmd *cobra.Command, p *plan.Plan) {
 		return
 	}
 	p.WriteDiff(out)
+	if !p.Dialect.Atomic() {
+		fmt.Fprintf(out, "Note: %s applies one statement per transaction, so a failure leaves\n"+
+			"      the statements before it in place. Re-run to converge.\n\n", p.Dialect.Engine)
+	}
 	fmt.Fprintln(out, "SQL:")
 	for _, db := range p.Databases() {
 		label := db

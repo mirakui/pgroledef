@@ -17,6 +17,14 @@ var (
 // rdsIAM is the Aurora-provided role that enables IAM DB authentication.
 const rdsIAM = "rds_iam"
 
+// dsqlPrivileges is what Aurora DSQL's GRANT accepts. TRUNCATE and REFERENCES
+// are rejected with "unsupported privilege in GRANT" even though an owner's own
+// ACL carries them, and the ON DATABASE privileges have no grantable target.
+var dsqlPrivileges = map[Privilege]bool{
+	PrivSelect: true, PrivInsert: true, PrivUpdate: true, PrivDelete: true,
+	PrivUsage: true, PrivCreate: true, PrivTrigger: true,
+}
+
 var privilegesByKind = map[string]map[Privilege]bool{
 	"database": {PrivConnect: true, PrivCreate: true, PrivTemp: true},
 	"schema":   {PrivUsage: true, PrivCreate: true},
@@ -161,6 +169,22 @@ func (v *validator) roles() {
 	}
 }
 
+// checkDSQLDatabase enforces the two things a DSQL cluster fixes about
+// databases: there is exactly one, named postgres, and GRANT has no ON DATABASE
+// form for it ("unsupported object type in GRANT").
+func (v *validator) checkDSQLDatabase(ctx, kind, db string) {
+	if v.cfg.Target.Engine != EngineDSQL {
+		return
+	}
+	if kind == "database" {
+		v.errf("%s: dsql has no GRANT ... ON DATABASE; grant on the schema instead", ctx)
+		return
+	}
+	if db != DSQLDatabase {
+		v.errf("%s: dsql has only the %q database, got %q", ctx, DSQLDatabase, db)
+	}
+}
+
 func (v *validator) checkPrivileges(ctx string, kind string, privs []Privilege) {
 	if len(privs) == 0 {
 		v.errf("%s: privileges must not be empty", ctx)
@@ -174,6 +198,9 @@ func (v *validator) checkPrivileges(ctx string, kind string, privs []Privilege) 
 		}
 		if allowed := privilegesByKind[kind]; allowed != nil && !allowed[p] {
 			v.errf("%s: privilege %q is not applicable to %s", ctx, p, kind)
+		}
+		if v.cfg.Target.Engine == EngineDSQL && !dsqlPrivileges[p] {
+			v.errf("%s: privilege %q is not supported on dsql", ctx, p)
 		}
 		// Without a declared version the check is deferred to plan/apply,
 		// which knows the server's major version.
@@ -224,6 +251,7 @@ func (v *validator) grants() {
 			if v.isUnmanagedDB(db) {
 				v.errf("%s: database %q matches policy.unmanaged_databases", ctx, db)
 			}
+			v.checkDSQLDatabase(ctx, kind, db)
 			v.checkPrivileges(ctx, privKind, g.Privileges)
 			key := kind + "\x00" + val
 			if seen[key] {
@@ -246,8 +274,10 @@ func (v *validator) defaultPrivileges() {
 			if !v.roleExists(d.ForRole) {
 				v.errf("%s: for_role references undeclared role %q", ctx, d.ForRole)
 			}
-			if _, err := ParseSchema(d.InSchema); err != nil {
+			if q, err := ParseSchema(d.InSchema); err != nil {
 				v.errf("%s: %v", ctx, err)
+			} else {
+				v.checkDSQLDatabase(ctx, "schema", q.Database)
 			}
 			switch d.On {
 			case ObjTables, ObjSequences:

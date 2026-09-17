@@ -1,7 +1,7 @@
 # pgroledef
 
 Declarative, authoritative management of PostgreSQL roles, memberships, grants
-and default privileges for Aurora PostgreSQL (Aurora DSQL support is planned).
+and default privileges for Aurora PostgreSQL and Aurora DSQL.
 Declarations are written in jsonnet; `pgroledef` evaluates them, validates them
 strictly, diffs them against the live catalog and applies the resulting SQL.
 
@@ -10,10 +10,11 @@ Think `psqldef` for roles: schema is psqldef's job, roles are pgroledef's.
 ## Status
 
 Early development. Current milestone: `render` / `validate` / `plan` / `apply`
-against Aurora-compatible PostgreSQL, exercised in CI on PostgreSQL 16, 17 and 18.
+against Aurora PostgreSQL and Aurora DSQL, exercised in CI on PostgreSQL 16, 17
+and 18.
 
 Out of scope for now: passwords, database/schema creation, IAM policies
-(`rds-db:connect`), Aurora DSQL, dropping undeclared roles.
+(`rds-db:connect`, `dsql:DbConnect`), dropping undeclared roles.
 
 ## Install
 
@@ -131,6 +132,36 @@ pgroledef plan -f roles.jsonnet --auth dsql-admin
 
 The RDS token is signed against `host:port` of the real cluster endpoint, so a
 CNAME in front of it produces a token the server rejects.
+
+## Aurora DSQL
+
+Set `target.engine` to `dsql`. The declaration format is the same, but a DSQL
+cluster constrains it:
+
+| | Aurora PostgreSQL | Aurora DSQL |
+|---|---|---|
+| databases | many | exactly one, always `postgres`; identifiers still spell it out (`postgres.app.jobs`) |
+| `GRANT ... ON DATABASE` | yes | rejected by the server, so rejected by `validate` |
+| IAM identities | `member_of: ['rds_iam']` plus an IAM policy | `iam_principals: ['arn:aws:iam::…:role/…']`, applied as `AWS IAM GRANT` |
+| privileges | all of PostgreSQL's | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `USAGE`, `CREATE`, `TRIGGER` (`TRUNCATE` and `REFERENCES` are rejected even though an owner's own ACL carries them) |
+| `apply` | one transaction per database | **one transaction per statement** |
+
+The last row is the one to plan around. DSQL allows a single DDL statement per
+transaction, and `CREATE ROLE`, `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`
+and `AWS IAM GRANT` are all DDL there, so a role plan cannot be applied
+atomically. `plan` says so, and `apply` logs every statement as it runs, so the
+point of failure is the last line printed. Re-run after fixing the cause: the
+plan is derived from the live catalog, so it converges.
+
+A role's IAM mapping has to be revoked before the role can be dropped, which
+matters if you remove a role by hand — DSQL reports it as
+`role "x" cannot be dropped because some objects depend on it`.
+
+```bash
+export PGROLEDEF_DSN="postgres://admin@<cluster-id>.dsql.ap-northeast-1.on.aws:5432/postgres"
+pgroledef plan  -f roles.jsonnet   # --auth dsql-admin is the default here
+pgroledef apply -f roles.jsonnet
+```
 
 ## Supported PostgreSQL versions
 

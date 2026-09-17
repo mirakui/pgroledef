@@ -61,3 +61,22 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 - `plan` exits 2 when there is a diff — that is the contract, not a bug.
 - Keep `DisallowUnknownFields()`: typos in declarations must fail before we connect.
 - Scratch scripts go in `.cctmp/scratch/` (gitignored).
+
+## Engine differences
+
+`internal/plan/dialect.go` is the one place engine differences live. Anything
+that branches on `config.EngineDSQL` outside it (or outside
+`internal/config/validate.go`, which rejects declarations the engine cannot
+express) is a smell.
+
+Facts measured on a real DSQL cluster, not taken from the AWS docs, which
+disagree with the server on several of them:
+
+- `CREATE ROLE`, `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES` and
+  `AWS IAM GRANT` are all DDL, and a transaction takes one DDL statement, so
+  `apply` is not atomic there.
+- `aclexplode()`, `pg_get_userbyid()`, `pg_default_acl` and `pg_database` all
+  work, so the catalog queries are shared with Aurora.
+- Sequences are visible as `pg_class.relkind = 'S'`; `pg_sequences` is absent.
+- The predefined roles are `admin`, `dbowner` (the only superuser) and
+  `pg_dsql_diagnostic`, plus PostgreSQL's own `pg_*` roles.

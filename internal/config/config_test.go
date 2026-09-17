@@ -58,9 +58,21 @@ func TestInvalid(t *testing.T) {
 // TestGoldenRender pins the normalized canonical output of the example,
 // including default privileges derived from creates_objects_in.
 func TestGoldenRender(t *testing.T) {
-	for _, env := range []string{"staging", "production"} {
-		t.Run(env, func(t *testing.T) {
-			cfg, err := load(t, "../../examples/shopfront.jsonnet", map[string]string{"env": env})
+	cases := []struct {
+		name   string
+		file   string
+		ext    map[string]string
+		golden string
+	}{
+		{name: "staging", file: "shopfront.jsonnet", ext: map[string]string{"env": "staging"}, golden: "shopfront-staging"},
+		{name: "production", file: "shopfront.jsonnet", ext: map[string]string{"env": "production"}, golden: "shopfront-production"},
+		{name: "dsql", file: "shopfront-dsql.jsonnet",
+			ext:    map[string]string{"env": "staging", "account": "012345678901"},
+			golden: "shopfront-dsql-staging"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := load(t, "../../examples/"+c.file, c.ext)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +82,7 @@ func TestGoldenRender(t *testing.T) {
 			if err := enc.Encode(cfg); err != nil {
 				t.Fatal(err)
 			}
-			golden := filepath.Join("../../testdata/golden", "shopfront-"+env+".json")
+			golden := filepath.Join("../../testdata/golden", c.golden+".json")
 			if *update {
 				if err := os.WriteFile(golden, buf.Bytes(), 0o644); err != nil {
 					t.Fatal(err)

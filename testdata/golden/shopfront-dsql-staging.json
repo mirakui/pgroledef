@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "target": {
+    "engine": "dsql",
+    "identifier": "staging-shopfront"
+  },
+  "policy": {
+    "authoritative": true,
+    "protected_roles": [
+      "admin",
+      "dbowner",
+      "pg_*",
+      "awsdsql_*"
+    ],
+    "unmanaged_databases": null
+  },
+  "roles": [
+    {
+      "name": "grp_shopfront_reader",
+      "login": false,
+      "grants": [
+        {
+          "on": {
+            "schema": "postgres.shopfront_staging"
+          },
+          "privileges": [
+            "USAGE"
+          ]
+        },
+        {
+          "on": {
+            "all_tables_in_schema": "postgres.shopfront_staging"
+          },
+          "privileges": [
+            "SELECT"
+          ]
+        }
+      ],
+      "default_privileges": [
+        {
+          "for_role": "shopfront_migrator",
+          "in_schema": "postgres.shopfront_staging",
+          "on": "tables",
+          "privileges": [
+            "SELECT"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grp_shopfront_writer",
+      "login": false,
+      "member_of": [
+        "grp_shopfront_reader"
+      ],
+      "grants": [
+        {
+          "on": {
+            "schema": "postgres.shopfront_staging"
+          },
+          "privileges": [
+            "USAGE",
+            "CREATE"
+          ]
+        },
+        {
+          "on": {
+            "all_tables_in_schema": "postgres.shopfront_staging"
+          },
+          "privileges": [
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE"
+          ]
+        },
+        {
+          "on": {
+            "all_sequences_in_schema": "postgres.shopfront_staging"
+          },
+          "privileges": [
+            "USAGE",
+            "SELECT"
+          ]
+        }
+      ],
+      "default_privileges": [
+        {
+          "for_role": "shopfront_migrator",
+          "in_schema": "postgres.shopfront_staging",
+          "on": "sequences",
+          "privileges": [
+            "USAGE",
+            "SELECT"
+          ]
+        },
+        {
+          "for_role": "shopfront_migrator",
+          "in_schema": "postgres.shopfront_staging",
+          "on": "tables",
+          "privileges": [
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shopfront_migrator",
+      "login": true,
+      "member_of": [
+        "grp_shopfront_writer"
+      ],
+      "iam_principals": [
+        "arn:aws:iam::012345678901:role/shopfront-staging-migrator"
+      ],
+      "creates_objects_in": [
+        "postgres.shopfront_staging"
+      ]
+    },
+    {
+      "name": "shopfront_api",
+      "login": true,
+      "member_of": [
+        "grp_shopfront_writer"
+      ],
+      "iam_principals": [
+        "arn:aws:iam::012345678901:role/shopfront-staging-api"
+      ]
+    }
+  ]
+}

@@ -28,6 +28,8 @@ type Statement struct {
 
 // Plan is the ordered set of statements grouped by the database they run in.
 type Plan struct {
+	// Dialect is the engine the plan was built for; Apply reads its ApplyMode.
+	Dialect    Dialect
 	Statements []Statement
 	// RoleDiffs is the same change set expressed in the shape of the
 	// declaration, one entry per role, for human review.
@@ -63,9 +65,7 @@ func (p *Plan) Databases() []string {
 // declared in cfg are managed: their existence, login flag, memberships,
 // and every privilege they hold on managed databases.
 func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector) (*Plan, error) {
-	if cfg.Target.Engine != config.EngineAuroraPostgres {
-		return nil, fmt.Errorf("engine %q is not supported yet (only %s)", cfg.Target.Engine, config.EngineAuroraPostgres)
-	}
+	dialect := DialectFor(cfg.Target.Engine)
 	conn, err := connector.Connect(ctx, "")
 	if err != nil {
 		return nil, err
@@ -78,6 +78,11 @@ func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector)
 	}
 	if err := config.CheckServerMajor(cfg, config.MajorFromVersionNum(st.ServerVersionNum)); err != nil {
 		return nil, err
+	}
+	if dialect.IAMPrincipals {
+		if err := catalog.ReadIAMPrincipals(ctx, conn, st); err != nil {
+			return nil, err
+		}
 	}
 	dbs := referencedDatabases(cfg)
 	for _, name := range dbs {
@@ -175,6 +180,10 @@ func referencedDatabases(cfg *config.Config) []string {
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
+// literal quotes a string literal. DSQL's AWS IAM GRANT takes the ARN as a
+// literal, not an identifier.
+func literal(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
 func privList(ps []string) string { return strings.Join(ps, ", ") }
 
 type privSet = catalog.PrivSet
@@ -210,8 +219,8 @@ func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
 			return nil, err
 		}
 	}
-	p := &Plan{}
-	d := &differ{cfg: cfg, st: st, p: p}
+	p := &Plan{Dialect: DialectFor(cfg.Target.Engine)}
+	d := &differ{cfg: cfg, st: st, p: p, dialect: p.Dialect}
 	if err := d.roles(); err != nil {
 		return nil, err
 	}
@@ -230,9 +239,10 @@ func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
 }
 
 type differ struct {
-	cfg *config.Config
-	st  *catalog.State
-	p   *Plan
+	cfg     *config.Config
+	st      *catalog.State
+	p       *Plan
+	dialect Dialect
 }
 
 func (d *differ) managed(role string) bool {
@@ -268,7 +278,7 @@ func (d *differ) roles() error {
 				login = "LOGIN"
 			}
 			d.p.add("", fmt.Sprintf("CREATE ROLE %s WITH %s", ident(name), login), false, "")
-			have = &catalog.Role{Name: name, Login: want.Login, MemberOf: map[string]bool{}}
+			have = &catalog.Role{Name: name, Login: want.Login, MemberOf: map[string]bool{}, InheritsFrom: map[string]bool{}}
 			rd := d.roleDiff(name)
 			rd.Created = true
 			rd.LoginChanged, rd.LoginAfter = true, want.Login
@@ -317,7 +327,55 @@ func (d *differ) roles() error {
 			d.p.add("", fmt.Sprintf("REVOKE %s FROM %s", ident(g), ident(pd.name)), true, "membership not declared")
 		}
 	}
+	d.iamPrincipals()
 	return nil
+}
+
+// iamPrincipals reconciles the IAM ARNs mapped to each declared role. DSQL
+// only: on Aurora the mapping lives in IAM policies, which are out of scope.
+func (d *differ) iamPrincipals() {
+	if !d.dialect.IAMPrincipals {
+		return
+	}
+	for _, want := range d.cfg.Roles {
+		desired := map[string]bool{}
+		for _, arn := range want.IAMPrincipals {
+			desired[arn] = true
+		}
+		var have map[string]bool
+		if r := d.st.Roles[want.Name]; r != nil {
+			have = r.IAMPrincipals
+		}
+		var grant, revoke, before, after []string
+		for arn := range desired {
+			if !have[arn] {
+				grant = append(grant, arn)
+			}
+			after = append(after, arn)
+		}
+		for arn := range have {
+			if !desired[arn] {
+				revoke = append(revoke, arn)
+			}
+			before = append(before, arn)
+		}
+		if len(grant) == 0 && len(revoke) == 0 {
+			continue
+		}
+		sort.Strings(grant)
+		sort.Strings(revoke)
+		sort.Strings(before)
+		sort.Strings(after)
+		rd := d.roleDiff(want.Name)
+		rd.PrincipalsChanged, rd.PrincipalsBefore, rd.PrincipalsAfter = true, before, after
+		for _, arn := range grant {
+			d.p.add("", fmt.Sprintf("AWS IAM GRANT %s TO %s", ident(want.Name), literal(arn)), false, "")
+		}
+		for _, arn := range revoke {
+			d.p.add("", fmt.Sprintf("AWS IAM REVOKE %s FROM %s", ident(want.Name), literal(arn)), true,
+				"iam principal not declared")
+		}
+	}
 }
 
 // objectKey identifies a grant target within a database for diffing.
@@ -637,8 +695,11 @@ func (d *differ) defaultPrivileges() error {
 		})
 		wrap := d.needsCreatorMembership(k.ForRole)
 		if wrap {
-			d.p.add(k.Database, fmt.Sprintf("GRANT %s TO CURRENT_USER", ident(k.ForRole)), false,
-				"temporary: ALTER DEFAULT PRIVILEGES FOR ROLE requires membership in the creator role")
+			// INHERIT has to be named: on an existing membership GRANT leaves
+			// the options it does not mention alone, so a plain GRANT can be a
+			// no-op against a membership that carries ADMIN only.
+			d.p.add(k.Database, fmt.Sprintf("GRANT %s TO CURRENT_USER WITH INHERIT TRUE", ident(k.ForRole)), false,
+				"temporary: ALTER DEFAULT PRIVILEGES FOR ROLE requires an inheriting membership in the creator role")
 		}
 		if len(missing) > 0 {
 			d.p.add(k.Database, fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s GRANT %s ON %s TO %s",
@@ -649,7 +710,13 @@ func (d *differ) defaultPrivileges() error {
 				ident(k.ForRole), ident(k.Schema), privList(extra), objType, ident(k.Grantee)), true, "default privilege not declared")
 		}
 		if wrap {
-			d.p.add(k.Database, fmt.Sprintf("REVOKE %s FROM CURRENT_USER", ident(k.ForRole)), false, "undo temporary membership")
+			// Give back exactly what was borrowed: drop the whole membership
+			// only when there was none to begin with.
+			undo := fmt.Sprintf("REVOKE %s FROM CURRENT_USER", ident(k.ForRole))
+			if me := d.st.Roles[d.st.CurrentUser]; me != nil && me.MemberOf[k.ForRole] {
+				undo = fmt.Sprintf("REVOKE INHERIT OPTION FOR %s FROM CURRENT_USER", ident(k.ForRole))
+			}
+			d.p.add(k.Database, undo, false, "undo temporary membership")
 		}
 	}
 	return nil
@@ -657,10 +724,14 @@ func (d *differ) defaultPrivileges() error {
 
 // needsCreatorMembership reports whether the executing user must be granted the
 // creator role before ALTER DEFAULT PRIVILEGES FOR ROLE <creator> can run.
+// Plain membership is not enough: the grant has to carry INHERIT. Creating a
+// role as a non-superuser leaves the creator a member WITH ADMIN OPTION only,
+// which is what Aurora's master user and DSQL's admin end up holding for every
+// role they create.
 func (d *differ) needsCreatorMembership(creator string) bool {
 	me := d.st.Roles[d.st.CurrentUser]
 	if me == nil || me.Super || d.st.CurrentUser == creator {
 		return false
 	}
-	return !me.MemberOf[creator]
+	return !me.InheritsFrom[creator]
 }
