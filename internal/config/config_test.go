@@ -110,3 +110,49 @@ func TestDerivedDefaultPrivileges(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckServerMajor pins the rules that connect a declaration to a live
+// server: supported majors only, a declared version must match, and
+// version-gated privileges need a new enough server.
+func TestCheckServerMajor(t *testing.T) {
+	base := func(pv int, privs ...config.Privilege) *config.Config {
+		return &config.Config{
+			Version: 1,
+			Target:  config.Target{Engine: config.EngineAuroraPostgres, Identifier: "x", PostgresVersion: pv},
+			Roles: []config.Role{{Name: "app", Grants: []config.RoleGrant{
+				{On: config.GrantTarget{AllTablesInSchema: "db.public"}, Privileges: privs},
+			}}},
+		}
+	}
+	cases := []struct {
+		name  string
+		cfg   *config.Config
+		major int
+		want  string
+	}{
+		{"pg16", base(0, config.PrivSelect), 16, ""},
+		{"pg17", base(0, config.PrivSelect), 17, ""},
+		{"pg18", base(0, config.PrivSelect), 18, ""},
+		{"declared matches", base(17, config.PrivSelect), 17, ""},
+		{"too old", base(0, config.PrivSelect), 15, "requires 16 or later"},
+		{"declared mismatch", base(18, config.PrivSelect), 17, "target.postgres_version is 18 but the server is PostgreSQL 17"},
+		{"maintain on 16", base(0, config.PrivMaintain), 16, `privilege "MAINTAIN" requires PostgreSQL 17 or later`},
+		{"maintain on 17", base(0, config.PrivMaintain), 17, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.CheckServerMajor(tc.cfg, tc.major)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.want != "" && err == nil:
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+				t.Fatalf("error %v does not contain %q", err, tc.want)
+			}
+		})
+	}
+	if got := config.MajorFromVersionNum(170004); got != 17 {
+		t.Fatalf("MajorFromVersionNum(170004) = %d, want 17", got)
+	}
+}

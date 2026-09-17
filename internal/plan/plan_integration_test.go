@@ -36,6 +36,20 @@ func TestReconcileRoundTrip(t *testing.T) {
 	}
 	defer admin.Close(ctx)
 
+	var versionNum int
+	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&versionNum); err != nil {
+		t.Fatal(err)
+	}
+	major := config.MajorFromVersionNum(versionNum)
+	t.Logf("server is PostgreSQL %d", major)
+
+	// MAINTAIN only exists from PostgreSQL 17 on, so the declaration itself
+	// differs per major version.
+	readerTablePrivs := []config.Privilege{config.PrivSelect}
+	if major >= 17 {
+		readerTablePrivs = append(readerTablePrivs, config.PrivMaintain)
+	}
+
 	suffix := fmt.Sprintf("t%d", time.Now().UnixNano()%1e9)
 	db := "pgroledef_" + suffix
 	viewer, editor, app := "viewer_"+suffix, "editor_"+suffix, "app_"+suffix
@@ -66,7 +80,7 @@ func TestReconcileRoundTrip(t *testing.T) {
 			{Name: viewer, Grants: []config.RoleGrant{
 				{On: config.GrantTarget{Database: db}, Privileges: []config.Privilege{config.PrivConnect}},
 				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage}},
-				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: []config.Privilege{config.PrivSelect}},
+				{On: config.GrantTarget{AllTablesInSchema: schema}, Privileges: readerTablePrivs},
 			}},
 			{Name: editor, MemberOf: []string{viewer}, Grants: []config.RoleGrant{
 				{On: config.GrantTarget{Schema: schema}, Privileges: []config.Privilege{config.PrivUsage, config.PrivCreate}},
@@ -79,7 +93,17 @@ func TestReconcileRoundTrip(t *testing.T) {
 	cfg.Policy = config.DefaultPolicy()
 	normalized := validate(t, cfg)
 
-	p := build(t, ctx, normalized, connector)
+	// A declaration pinned to another major version must be refused before
+	// anything is applied.
+	mismatched := *normalized
+	mismatched.Target.PostgresVersion = major + 1
+	if _, err := plan.Build(ctx, &mismatched, connector); err == nil {
+		t.Fatal("plan should refuse a declaration pinned to a different major version")
+	}
+	pinned := *normalized
+	pinned.Target.PostgresVersion = major
+
+	p := build(t, ctx, &pinned, connector)
 	if p.Empty() {
 		t.Fatal("first plan should create roles and grants")
 	}

@@ -74,6 +74,9 @@ func Build(ctx context.Context, cfg *config.Config, connector catalog.Connector)
 	if err != nil {
 		return nil, err
 	}
+	if err := config.CheckServerMajor(cfg, config.MajorFromVersionNum(st.ServerVersionNum)); err != nil {
+		return nil, err
+	}
 	dbs := referencedDatabases(cfg)
 	for _, name := range dbs {
 		db := st.Databases[name]
@@ -177,6 +180,11 @@ func diffSets(desired, actual privSet) (missing, extra []string) {
 
 // Diff computes the plan from an already-read state (pure; used by tests).
 func Diff(cfg *config.Config, st *catalog.State) (*Plan, error) {
+	if st.ServerVersionNum != 0 {
+		if err := config.CheckServerMajor(cfg, config.MajorFromVersionNum(st.ServerVersionNum)); err != nil {
+			return nil, err
+		}
+	}
 	p := &Plan{}
 	d := &differ{cfg: cfg, st: st, p: p}
 	if err := d.roles(); err != nil {
