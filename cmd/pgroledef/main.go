@@ -137,13 +137,21 @@ func newRootCmd() *cobra.Command {
 		c.Flags().StringVar(&flagAuth, "auth", "", "how to authenticate: password, rds-iam, dsql, dsql-admin (default: password on aurora-postgresql, dsql-admin on dsql)")
 		c.Flags().StringVar(&flagRegion, "region", "", "AWS region for IAM token signing (default: the AWS SDK's resolved region)")
 		c.Flags().StringVar(&flagSSLRootCert, "sslrootcert", "", "CA bundle for verify-full; Aurora needs the RDS bundle")
-		c.Flags().StringVarP(&flagHost, "host", "h", "", "database server host (default: $PGHOST, then the DSN)")
-		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: $PGPORT, then the DSN)")
-		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: $PGUSER, then the DSN)")
-		c.Flags().StringVarP(&flagDBName, "dbname", "d", "", "database to connect to (default: $PGDATABASE, then the DSN)")
+		c.Flags().StringVarP(&flagHost, "host", "h", "", "database server host (default: the DSN, then $PGHOST)")
+		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: the DSN, then $PGPORT)")
+		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: the DSN, then $PGUSER)")
+		c.Flags().StringVarP(&flagDBName, "dbname", "d", "", "database to connect to (default: the DSN, then $PGDATABASE)")
 		// -h belongs to the host here, as it does in psql. Registering help
 		// first stops cobra from claiming the shorthand for itself.
 		c.Flags().Bool("help", false, "help for "+c.Name())
+		// "plan -h" is otherwise reported as a missing argument, which reads
+		// like a bug to anyone who expected the usage text.
+		c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+			if strings.Contains(err.Error(), "'h' in -h") {
+				return fmt.Errorf("%w (-h is the server host here; use --help for usage)", err)
+			}
+			return err
+		})
 	}
 
 	root.AddCommand(render, validate, planCmd, applyCmd, newVersionCmd())
@@ -208,20 +216,18 @@ func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, e
 		User:     flagUser,
 		Database: flagDBName,
 	}
-	connCfg, err := co.Resolve()
+	resolved, err := co.Resolve()
 	if err != nil {
 		return nil, err
 	}
 	if !mode.UsesToken() {
-		return catalog.NewConnConfigConnector(connCfg), nil
+		return catalog.NewConnConfigConnector(resolved.Conn), nil
 	}
 	return awsauth.NewConnector(ctx, awsauth.Options{
-		Conn:          connCfg,
-		UserExplicit:  co.UserExplicit(),
-		SSLModePinned: co.SSLModePinned(),
-		Mode:          mode,
-		Region:        flagRegion,
-		SSLRootCert:   flagSSLRootCert,
+		Resolved:    resolved,
+		Mode:        mode,
+		Region:      flagRegion,
+		SSLRootCert: flagSSLRootCert,
 	})
 }
 

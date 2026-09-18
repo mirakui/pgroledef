@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/mirakui/pgroledef/internal/awsauth"
 	"github.com/mirakui/pgroledef/internal/conninfo"
 )
@@ -115,7 +113,7 @@ func TestNewConnector(t *testing.T) {
 			t.Setenv("PGSERVICE", "")
 			t.Setenv("AWS_REGION", "ap-northeast-1")
 			opts := c.opts
-			opts.Conn, opts.UserExplicit, opts.SSLModePinned = resolve(t, c.dsn)
+			opts.Resolved = resolve(t, conninfo.Options{DSN: c.dsn})
 			_, err := awsauth.NewConnector(context.Background(), opts)
 			switch {
 			case c.want == "" && err != nil:
@@ -139,13 +137,10 @@ func TestPinnedSSLModeKeepsRootCert(t *testing.T) {
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("AWS_REGION", "ap-northeast-1")
 	ca := writeCABundle(t)
-	conn, userExplicit, sslModePinned := resolve(t, "postgres://u@h:5432/d?sslmode=verify-ca")
 	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		Conn:          conn,
-		UserExplicit:  userExplicit,
-		SSLModePinned: sslModePinned,
-		Mode:          awsauth.ModeRDSIAM,
-		SSLRootCert:   ca,
+		Resolved:    resolve(t, conninfo.Options{DSN: "postgres://u@h:5432/d?sslmode=verify-ca"}),
+		Mode:        awsauth.ModeRDSIAM,
+		SSLRootCert: ca,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -167,12 +162,11 @@ func TestUpgradeKeepsExtraHosts(t *testing.T) {
 	t.Setenv("PGUSER", "")
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("AWS_REGION", "ap-northeast-1")
-	conn, userExplicit, sslModePinned := resolve(t, "postgres://admin@a.dsql.ap-northeast-1.on.aws,b.dsql.ap-northeast-1.on.aws:5432/postgres")
 	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		Conn:          conn,
-		UserExplicit:  userExplicit,
-		SSLModePinned: sslModePinned,
-		Mode:          awsauth.ModeDSQLAdmin,
+		Resolved: resolve(t, conninfo.Options{
+			DSN: "postgres://admin@a.dsql.ap-northeast-1.on.aws,b.dsql.ap-northeast-1.on.aws:5432/postgres",
+		}),
+		Mode: awsauth.ModeDSQLAdmin,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,28 +195,73 @@ func TestNewConnectorNeedsRegion(t *testing.T) {
 	t.Setenv("AWS_DEFAULT_REGION", "")
 	t.Setenv("AWS_PROFILE", "")
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "absent"))
-	conn, userExplicit, sslModePinned := resolve(t, "postgres://u@h:5432/d?sslmode=require")
 	_, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		Conn:          conn,
-		UserExplicit:  userExplicit,
-		SSLModePinned: sslModePinned,
-		Mode:          awsauth.ModeRDSIAM,
+		Resolved: resolve(t, conninfo.Options{DSN: "postgres://u@h:5432/d?sslmode=require"}),
+		Mode:     awsauth.ModeRDSIAM,
 	})
 	if err == nil || !strings.Contains(err.Error(), "needs a region") {
 		t.Fatalf("want a region error, got %v", err)
 	}
 }
 
+// TestConnectionFlagsReachTheToken pins the point of the whole arrangement:
+// RDS signs host:port and the user, and the TLS name has to follow the host,
+// so the -h/-p/-U flags must be visible here and not just in the DSN.
+func TestConnectionFlagsReachTheToken(t *testing.T) {
+	t.Setenv("PGSSLMODE", "")
+	t.Setenv("PGSSLROOTCERT", "")
+	t.Setenv("PGUSER", "")
+	t.Setenv("PGSERVICE", "")
+	t.Setenv("AWS_REGION", "ap-northeast-1")
+	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
+		Resolved: resolve(t, conninfo.Options{
+			DSN:  "postgres://dsnuser@dsnhost:5432/dsndb",
+			Host: "real.cluster.example",
+			Port: "5433",
+			User: "migrator",
+		}),
+		Mode:        awsauth.ModeRDSIAM,
+		SSLRootCert: writeCABundle(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := c.ConnConfig()
+	if cfg.Host != "real.cluster.example" || cfg.Port != 5433 || cfg.User != "migrator" {
+		t.Fatalf("the token would be signed for %s@%s:%d", cfg.User, cfg.Host, cfg.Port)
+	}
+	if cfg.TLSConfig == nil || cfg.TLSConfig.ServerName != "real.cluster.example" {
+		t.Fatalf("TLS verifies the wrong name: %+v", cfg.TLSConfig)
+	}
+}
+
+// TestUserFromFlagCounts covers -U satisfying the explicit-user requirement,
+// which used to be readable only from the DSN.
+func TestUserFromFlagCounts(t *testing.T) {
+	t.Setenv("PGSSLMODE", "")
+	t.Setenv("PGSSLROOTCERT", "")
+	t.Setenv("PGUSER", "")
+	t.Setenv("PGSERVICE", "")
+	t.Setenv("AWS_REGION", "ap-northeast-1")
+	_, err := awsauth.NewConnector(context.Background(), awsauth.Options{
+		Resolved:    resolve(t, conninfo.Options{Host: "h", User: "app"}),
+		Mode:        awsauth.ModeRDSIAM,
+		SSLRootCert: writeCABundle(t),
+	})
+	if err != nil {
+		t.Fatalf("-U should satisfy the explicit-user requirement: %v", err)
+	}
+}
+
 // resolve does what the CLI does before it reaches this package: merge the DSN
 // with the connection flags and report what the caller named explicitly.
-func resolve(t *testing.T, dsn string) (*pgx.ConnConfig, bool, bool) {
+func resolve(t *testing.T, o conninfo.Options) conninfo.Resolved {
 	t.Helper()
-	co := conninfo.Options{DSN: dsn}
-	cfg, err := co.Resolve()
+	r, err := o.Resolve()
 	if err != nil {
-		t.Fatalf("resolve %q: %v", dsn, err)
+		t.Fatalf("resolve %+v: %v", o, err)
 	}
-	return cfg, co.UserExplicit(), co.SSLModePinned()
+	return r
 }
 
 // writeCABundle writes a throwaway self-signed certificate; only the fact that

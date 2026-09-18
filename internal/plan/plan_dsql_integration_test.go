@@ -33,15 +33,13 @@ func TestDSQLReconcileRoundTrip(t *testing.T) {
 	iamARN := os.Getenv("PGROLEDEF_TEST_DSQL_IAM_ARN")
 	ctx := context.Background()
 	co := conninfo.Options{DSN: "postgres://admin@" + endpoint + ":5432/" + config.DSQLDatabase}
-	connCfg, err := co.Resolve()
+	resolved, err := co.Resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
 	connector, err := awsauth.NewConnector(ctx, awsauth.Options{
-		Conn:          connCfg,
-		UserExplicit:  co.UserExplicit(),
-		SSLModePinned: co.SSLModePinned(),
-		Mode:          awsauth.ModeDSQLAdmin,
+		Resolved: resolved,
+		Mode:     awsauth.ModeDSQLAdmin,
 	})
 	if err != nil {
 		t.Fatal(err)

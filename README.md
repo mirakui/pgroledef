@@ -67,10 +67,14 @@ go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging 
 
 | flag | psql | falls back to |
 |---|---|---|
-| `-h`, `--host` | `-h` | `$PGHOST`, then the DSN |
-| `-p`, `--port` | `-p` | `$PGPORT`, then the DSN |
-| `-U`, `--username` | `-U` | `$PGUSER`, then the DSN |
-| `-d`, `--dbname` | `-d` | `$PGDATABASE`, then the DSN |
+| `-h`, `--host` | `-h` | the DSN, then `$PGHOST` |
+| `-p`, `--port` | `-p` | the DSN, then `$PGPORT` |
+| `-U`, `--username` | `-U` | the DSN, then `$PGUSER` |
+| `-d`, `--dbname` | `-d` | the DSN, then `$PGDATABASE` |
+
+The order is the flag, then the DSN, then the environment, which is libpq's.
+`-h` takes psql's spellings too: a comma-separated list of hosts, or a unix
+socket directory.
 
 `-d` only picks the database the first connection is made to; which databases
 are reconciled comes from the declaration. Because `-h` is the host on `plan`

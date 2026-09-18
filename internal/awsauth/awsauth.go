@@ -18,6 +18,8 @@ import (
 	rdsauth "github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/mirakui/pgroledef/internal/conninfo"
 )
 
 // Mode selects how the connection password is obtained.
@@ -54,16 +56,11 @@ func ParseMode(s string) (Mode, error) {
 func (m Mode) UsesToken() bool { return m != ModePassword }
 
 type Options struct {
-	// Conn is the already-resolved connection configuration; see
-	// internal/conninfo, which merges the DSN with the -h/-p/-U/-d flags.
-	Conn *pgx.ConnConfig
-	// UserExplicit reports whether the database user was named deliberately
-	// rather than guessed from the OS.
-	UserExplicit bool
-	// SSLModePinned reports whether the caller chose a verification level, in
-	// which case pgx's handling of it is left alone.
-	SSLModePinned bool
-	// Mode must not be ModePassword; use catalog.NewDSNConnector for that.
+	// Resolved is what conninfo made of the DSN and the -h/-p/-U/-d flags.
+	// Taking it whole keeps the connection settings and the facts about them
+	// from drifting apart.
+	conninfo.Resolved
+	// Mode must not be ModePassword; use catalog.NewConnConfigConnector for that.
 	Mode Mode
 	// Region defaults to the AWS SDK's resolved region.
 	Region string
