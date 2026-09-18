@@ -25,8 +25,9 @@ func WriteSQL(p *Plan, w io.Writer) error {
 	}
 	atomic := p.Dialect.Atomic()
 	if !atomic {
-		fmt.Fprintf(bw, "-- %s takes one DDL statement per transaction, so this script has none:\n", p.Dialect.Engine)
-		fmt.Fprintln(bw, "-- a failure leaves the statements before it in place. Re-run plan to converge.")
+		fmt.Fprintln(bw, "-- Aurora DSQL takes one DDL statement per transaction, so this script opens no")
+		fmt.Fprintln(bw, "-- transaction: a failure leaves the statements before it in place. Unlike apply,")
+		fmt.Fprintln(bw, "-- psql does not retry serialization failures (40001). Re-run plan to converge.")
 	}
 	for _, db := range p.Databases() {
 		fmt.Fprintln(bw)

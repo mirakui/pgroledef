@@ -95,18 +95,23 @@ COMMIT;
 
 Run it with `ON_ERROR_STOP=1`: without it psql keeps going after an error, and
 the `COMMIT` of an aborted transaction is a rollback, so later blocks would run
-against a half-applied cluster. The transaction is per database, not per
-script — `\connect` drops an open transaction, so the `COMMIT` has to come
-before it — which is the same granularity `apply` uses. The file is written
-even when there is no diff (comments only), and `--out` does not change the
-exit code.
+against a half-applied cluster. Do not add `-1` / `--single-transaction`: the
+script manages its own transactions, and `\connect` would discard the outer
+one anyway. The transaction is per database, not per script — `\connect`
+drops an open transaction, so the `COMMIT` has to come before it — which is
+the same granularity `apply` uses. The file is written even when there is no
+diff (comments only), and `--out` does not change the exit code.
 
 On Aurora DSQL the script has no `BEGIN`/`COMMIT` at all, because DSQL takes
 one DDL statement per transaction; the header comment says so. As with `apply`
 there, a failure leaves the statements before it in place, and re-running
-`plan` converges. The hazard to know about is the borrowed membership described
-under [Aurora DSQL](#aurora-dsql): a failure between the borrow and its return
-leaves the executing user inheriting everything the creator role has.
+`plan` converges. Two things differ from `apply`. psql does not retry
+serialization failures (SQLSTATE 40001) the way `apply` does, so a concurrent
+catalog change stops the script where `apply` would have backed off and
+retried; re-run it. And the borrowed membership described under
+[Aurora DSQL](#aurora-dsql) is not returned on failure: a failure between the
+borrow and its return leaves the executing user inheriting everything the
+creator role has.
 
 ## Connecting with AWS IAM authentication
 
