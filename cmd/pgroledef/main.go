@@ -14,6 +14,7 @@ import (
 	"github.com/mirakui/pgroledef/internal/awsauth"
 	"github.com/mirakui/pgroledef/internal/catalog"
 	"github.com/mirakui/pgroledef/internal/config"
+	"github.com/mirakui/pgroledef/internal/conninfo"
 	"github.com/mirakui/pgroledef/internal/jsonnetx"
 	"github.com/mirakui/pgroledef/internal/plan"
 )
@@ -23,6 +24,10 @@ var (
 	flagExtStrs     []string
 	flagJPaths      []string
 	flagDSN         string
+	flagHost        string
+	flagPort        string
+	flagUser        string
+	flagDBName      string
 	flagOut         string
 	flagAuth        string
 	flagRegion      string
@@ -30,6 +35,13 @@ var (
 )
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "pgroledef",
 		Short:         "Declarative, authoritative role management for Aurora PostgreSQL / Aurora DSQL",
@@ -125,13 +137,25 @@ func main() {
 		c.Flags().StringVar(&flagAuth, "auth", "", "how to authenticate: password, rds-iam, dsql, dsql-admin (default: password on aurora-postgresql, dsql-admin on dsql)")
 		c.Flags().StringVar(&flagRegion, "region", "", "AWS region for IAM token signing (default: the AWS SDK's resolved region)")
 		c.Flags().StringVar(&flagSSLRootCert, "sslrootcert", "", "CA bundle for verify-full; Aurora needs the RDS bundle")
+		c.Flags().StringVarP(&flagHost, "host", "h", "", "database server host (default: the DSN, then $PGHOST)")
+		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: the DSN, then $PGPORT)")
+		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: the DSN, then $PGUSER)")
+		c.Flags().StringVarP(&flagDBName, "dbname", "d", "", "database to connect to (default: the DSN, then $PGDATABASE)")
+		// -h belongs to the host here, as it does in psql. Registering help
+		// first stops cobra from claiming the shorthand for itself.
+		c.Flags().Bool("help", false, "help for "+c.Name())
+		// "plan -h" is otherwise reported as a missing argument, which reads
+		// like a bug to anyone who expected the usage text.
+		c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+			if strings.Contains(err.Error(), "'h' in -h") {
+				return fmt.Errorf("%w (-h is the server host here; use --help for usage)", err)
+			}
+			return err
+		})
 	}
 
 	root.AddCommand(render, validate, planCmd, applyCmd, newVersionCmd())
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 func loadConfig() (*config.Config, error) {
@@ -185,11 +209,22 @@ func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, e
 		}
 		mode = m
 	}
+	co := conninfo.Options{
+		DSN:      flagDSN,
+		Host:     flagHost,
+		Port:     flagPort,
+		User:     flagUser,
+		Database: flagDBName,
+	}
+	resolved, err := co.Resolve()
+	if err != nil {
+		return nil, err
+	}
 	if !mode.UsesToken() {
-		return catalog.NewDSNConnector(flagDSN)
+		return catalog.NewConnConfigConnector(resolved.Conn), nil
 	}
 	return awsauth.NewConnector(ctx, awsauth.Options{
-		DSN:         flagDSN,
+		Resolved:    resolved,
 		Mode:        mode,
 		Region:      flagRegion,
 		SSLRootCert: flagSSLRootCert,
