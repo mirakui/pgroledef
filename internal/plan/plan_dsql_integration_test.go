@@ -11,6 +11,7 @@ import (
 
 	"github.com/mirakui/pgroledef/internal/awsauth"
 	"github.com/mirakui/pgroledef/internal/config"
+	"github.com/mirakui/pgroledef/internal/conninfo"
 	"github.com/mirakui/pgroledef/internal/plan"
 )
 
@@ -31,9 +32,16 @@ func TestDSQLReconcileRoundTrip(t *testing.T) {
 	}
 	iamARN := os.Getenv("PGROLEDEF_TEST_DSQL_IAM_ARN")
 	ctx := context.Background()
+	co := conninfo.Options{DSN: "postgres://admin@" + endpoint + ":5432/" + config.DSQLDatabase}
+	connCfg, err := co.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
 	connector, err := awsauth.NewConnector(ctx, awsauth.Options{
-		DSN:  "postgres://admin@" + endpoint + ":5432/" + config.DSQLDatabase,
-		Mode: awsauth.ModeDSQLAdmin,
+		Conn:          connCfg,
+		UserExplicit:  co.UserExplicit(),
+		SSLModePinned: co.SSLModePinned(),
+		Mode:          awsauth.ModeDSQLAdmin,
 	})
 	if err != nil {
 		t.Fatal(err)

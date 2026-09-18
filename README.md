@@ -57,6 +57,25 @@ go run ./cmd/pgroledef plan     -f examples/shopfront.jsonnet --ext-str env=stag
 go run ./cmd/pgroledef apply    -f examples/shopfront.jsonnet --ext-str env=staging
 ```
 
+`plan` and `apply` also take the psql spellings, which override whatever the
+DSN said, so the connection can be named without one:
+
+```bash
+go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging \
+  -h localhost -p 55417 -U postgres -d postgres
+```
+
+| flag | psql | falls back to |
+|---|---|---|
+| `-h`, `--host` | `-h` | `$PGHOST`, then the DSN |
+| `-p`, `--port` | `-p` | `$PGPORT`, then the DSN |
+| `-U`, `--username` | `-U` | `$PGUSER`, then the DSN |
+| `-d`, `--dbname` | `-d` | `$PGDATABASE`, then the DSN |
+
+`-d` only picks the database the first connection is made to; which databases
+are reconciled comes from the declaration. Because `-h` is the host on `plan`
+and `apply`, those two commands spell their help `--help` in full.
+
 `plan` exits 2 when there is a diff, 0 when the database already matches.
 `apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is
 given. The one exception is a statement that gives back a membership pgroledef
@@ -117,7 +136,8 @@ lifetime never has to be managed.
 Credentials and the region come from the standard AWS SDK chain;
 `--region` overrides the resolved region.
 
-The database user has to be named explicitly, in the DSN or `PGUSER`: pgx would
+The database user has to be named explicitly, with `-U` or in the DSN or
+`PGUSER`: pgx would
 otherwise fall back to the OS username, and a token signed for the wrong role
 comes back from the server as an opaque PAM failure.
 
@@ -133,6 +153,11 @@ curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global
 
 export PGROLEDEF_DSN="postgres://shopfront_migrator@mycluster.cluster-abc.ap-northeast-1.rds.amazonaws.com:5432/shopfront"
 pgroledef plan -f roles.jsonnet --auth rds-iam --sslrootcert global-bundle.pem
+
+# the same connection, without a DSN
+pgroledef plan -f roles.jsonnet --auth rds-iam --sslrootcert global-bundle.pem \
+  -h mycluster.cluster-abc.ap-northeast-1.rds.amazonaws.com -p 5432 \
+  -U shopfront_migrator -d shopfront
 ```
 
 Aurora DSQL chains to a public root, so no bundle is needed:
@@ -140,6 +165,9 @@ Aurora DSQL chains to a public root, so no bundle is needed:
 ```bash
 export PGROLEDEF_DSN="postgres://admin@<cluster-id>.dsql.ap-northeast-1.on.aws:5432/postgres"
 pgroledef plan -f roles.jsonnet --auth dsql-admin
+
+# or: pgroledef plan -f roles.jsonnet --auth dsql-admin \
+#       -h <cluster-id>.dsql.ap-northeast-1.on.aws -U admin -d postgres
 ```
 
 The RDS token is signed against `host:port` of the real cluster endpoint, so a

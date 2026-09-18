@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -55,7 +54,15 @@ func ParseMode(s string) (Mode, error) {
 func (m Mode) UsesToken() bool { return m != ModePassword }
 
 type Options struct {
-	DSN string
+	// Conn is the already-resolved connection configuration; see
+	// internal/conninfo, which merges the DSN with the -h/-p/-U/-d flags.
+	Conn *pgx.ConnConfig
+	// UserExplicit reports whether the database user was named deliberately
+	// rather than guessed from the OS.
+	UserExplicit bool
+	// SSLModePinned reports whether the caller chose a verification level, in
+	// which case pgx's handling of it is left alone.
+	SSLModePinned bool
 	// Mode must not be ModePassword; use catalog.NewDSNConnector for that.
 	Mode Mode
 	// Region defaults to the AWS SDK's resolved region.
@@ -78,18 +85,18 @@ func NewConnector(ctx context.Context, opts Options) (*Connector, error) {
 	if !opts.Mode.UsesToken() {
 		return nil, fmt.Errorf("auth mode %q does not use AWS tokens", opts.Mode)
 	}
-	base, err := pgx.ParseConfig(opts.DSN)
-	if err != nil {
-		return nil, fmt.Errorf("parse dsn: %w", err)
+	if opts.Conn == nil {
+		return nil, fmt.Errorf("auth mode %q needs a connection configuration", opts.Mode)
 	}
+	base := opts.Conn.Copy()
 	// pgx falls back to the OS username, which for IAM authentication means a
 	// token signed for the wrong role and an opaque PAM failure from the
 	// server. The database user has to be a deliberate choice here.
-	if !hasExplicitUser(opts.DSN) {
+	if !opts.UserExplicit {
 		return nil, fmt.Errorf("auth mode %q needs an explicit database user: put it in --dsn "+
-			"(postgres://<role>@host:5432/db) or set PGUSER", opts.Mode)
+			"(postgres://<role>@host:5432/db), pass -U/--username, or set PGUSER", opts.Mode)
 	}
-	if err := applyTLS(base, opts.Mode, opts.DSN, opts.SSLRootCert); err != nil {
+	if err := applyTLS(base, opts.Mode, opts.SSLModePinned, opts.SSLRootCert); err != nil {
 		return nil, err
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
@@ -162,7 +169,7 @@ func (c *Connector) token(ctx context.Context, cfg *pgx.ConnConfig) (string, err
 //
 // When the caller pinned an sslmode, that choice is left alone; only the CA
 // bundle is installed, so --sslrootcert keeps meaning "verify against this".
-func applyTLS(cfg *pgx.ConnConfig, mode Mode, dsn, rootCert string) error {
+func applyTLS(cfg *pgx.ConnConfig, mode Mode, sslModePinned bool, rootCert string) error {
 	if rootCert == "" {
 		rootCert = os.Getenv("PGSSLROOTCERT")
 	}
@@ -170,7 +177,7 @@ func applyTLS(cfg *pgx.ConnConfig, mode Mode, dsn, rootCert string) error {
 	if err != nil {
 		return err
 	}
-	if sslModeRequested(dsn) {
+	if sslModePinned {
 		if pool != nil {
 			setRootCAs(cfg.TLSConfig, pool)
 			for _, fb := range cfg.Fallbacks {
@@ -233,37 +240,4 @@ func certPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("sslrootcert %s contains no certificate", path)
 	}
 	return pool, nil
-}
-
-// sslModeRequested reports whether the user pinned a verification level, in
-// which case pgx's own handling of it is left alone.
-func sslModeRequested(dsn string) bool {
-	return strings.Contains(dsn, "sslmode=") || os.Getenv("PGSSLMODE") != ""
-}
-
-// hasExplicitUser reports whether the caller named the database user, rather
-// than leaving pgx to guess it from the OS. A connection service file may
-// supply it too, so naming a service counts.
-func hasExplicitUser(dsn string) bool {
-	if os.Getenv("PGUSER") != "" || os.Getenv("PGSERVICE") != "" {
-		return true
-	}
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		u, err := url.Parse(dsn)
-		if err != nil {
-			return false
-		}
-		if u.User != nil && u.User.Username() != "" {
-			return true
-		}
-		q := u.Query()
-		return q.Get("user") != "" || q.Get("service") != ""
-	}
-	for _, field := range strings.Fields(dsn) {
-		k, v, ok := strings.Cut(field, "=")
-		if ok && v != "" && (k == "user" || k == "service") {
-			return true
-		}
-	}
-	return false
 }

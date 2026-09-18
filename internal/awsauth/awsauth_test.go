@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/mirakui/pgroledef/internal/awsauth"
+	"github.com/mirakui/pgroledef/internal/conninfo"
 )
 
 func TestParseMode(t *testing.T) {
@@ -44,49 +47,62 @@ func TestUsesToken(t *testing.T) {
 func TestNewConnector(t *testing.T) {
 	ca := writeCABundle(t)
 
+	// The cases are written as a DSN plus the options that survive the merge,
+	// which is how the CLI builds them: conninfo resolves the DSN and reports
+	// whether a user and an sslmode were named.
 	cases := []struct {
 		name string
+		dsn  string
 		opts awsauth.Options
 		want string // substring of the expected error; "" means success
 	}{
 		{
 			name: "password mode is not ours",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModePassword},
+			dsn:  "postgres://u@h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModePassword},
 			want: "does not use AWS tokens",
 		},
 		{
 			name: "the database user has to be named",
-			opts: awsauth.Options{DSN: "postgres://h:5432/d", Mode: awsauth.ModeRDSIAM},
+			dsn:  "postgres://h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM},
 			want: "needs an explicit database user",
 		},
 		{
 			name: "a user in keyword form counts",
-			opts: awsauth.Options{DSN: "host=h port=5432 dbname=d user=app sslmode=require", Mode: awsauth.ModeRDSIAM},
+			dsn:  "host=h port=5432 dbname=d user=app sslmode=require",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM},
 		},
 		{
 			name: "aurora without a CA bundle explains the remedy",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM},
+			dsn:  "postgres://u@h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM},
 			want: "RDS CA bundle",
 		},
 		{
 			name: "aurora with a CA bundle",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM, SSLRootCert: ca},
+			dsn:  "postgres://u@h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM, SSLRootCert: ca},
 		},
 		{
 			name: "an explicit sslmode is left alone",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d?sslmode=require", Mode: awsauth.ModeRDSIAM},
+			dsn:  "postgres://u@h:5432/d?sslmode=require",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM},
 		},
 		{
 			name: "dsql trusts the system roots",
-			opts: awsauth.Options{DSN: "postgres://admin@c.dsql.ap-northeast-1.on.aws:5432/postgres", Mode: awsauth.ModeDSQLAdmin},
+			dsn:  "postgres://admin@c.dsql.ap-northeast-1.on.aws:5432/postgres",
+			opts: awsauth.Options{Mode: awsauth.ModeDSQLAdmin},
 		},
 		{
 			name: "sslrootcert=system means the system roots, not a file",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM, SSLRootCert: "system"},
+			dsn:  "postgres://u@h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM, SSLRootCert: "system"},
 		},
 		{
 			name: "a missing CA bundle is reported",
-			opts: awsauth.Options{DSN: "postgres://u@h:5432/d", Mode: awsauth.ModeRDSIAM, SSLRootCert: "/nonexistent.pem"},
+			dsn:  "postgres://u@h:5432/d",
+			opts: awsauth.Options{Mode: awsauth.ModeRDSIAM, SSLRootCert: "/nonexistent.pem"},
 			want: "read sslrootcert",
 		},
 	}
@@ -98,7 +114,9 @@ func TestNewConnector(t *testing.T) {
 			t.Setenv("PGUSER", "")
 			t.Setenv("PGSERVICE", "")
 			t.Setenv("AWS_REGION", "ap-northeast-1")
-			_, err := awsauth.NewConnector(context.Background(), c.opts)
+			opts := c.opts
+			opts.Conn, opts.UserExplicit, opts.SSLModePinned = resolve(t, c.dsn)
+			_, err := awsauth.NewConnector(context.Background(), opts)
 			switch {
 			case c.want == "" && err != nil:
 				t.Fatalf("unexpected error: %v", err)
@@ -121,10 +139,13 @@ func TestPinnedSSLModeKeepsRootCert(t *testing.T) {
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("AWS_REGION", "ap-northeast-1")
 	ca := writeCABundle(t)
+	conn, userExplicit, sslModePinned := resolve(t, "postgres://u@h:5432/d?sslmode=verify-ca")
 	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		DSN:         "postgres://u@h:5432/d?sslmode=verify-ca",
-		Mode:        awsauth.ModeRDSIAM,
-		SSLRootCert: ca,
+		Conn:          conn,
+		UserExplicit:  userExplicit,
+		SSLModePinned: sslModePinned,
+		Mode:          awsauth.ModeRDSIAM,
+		SSLRootCert:   ca,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,9 +167,12 @@ func TestUpgradeKeepsExtraHosts(t *testing.T) {
 	t.Setenv("PGUSER", "")
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("AWS_REGION", "ap-northeast-1")
+	conn, userExplicit, sslModePinned := resolve(t, "postgres://admin@a.dsql.ap-northeast-1.on.aws,b.dsql.ap-northeast-1.on.aws:5432/postgres")
 	c, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		DSN:  "postgres://admin@a.dsql.ap-northeast-1.on.aws,b.dsql.ap-northeast-1.on.aws:5432/postgres",
-		Mode: awsauth.ModeDSQLAdmin,
+		Conn:          conn,
+		UserExplicit:  userExplicit,
+		SSLModePinned: sslModePinned,
+		Mode:          awsauth.ModeDSQLAdmin,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -177,13 +201,28 @@ func TestNewConnectorNeedsRegion(t *testing.T) {
 	t.Setenv("AWS_DEFAULT_REGION", "")
 	t.Setenv("AWS_PROFILE", "")
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "absent"))
+	conn, userExplicit, sslModePinned := resolve(t, "postgres://u@h:5432/d?sslmode=require")
 	_, err := awsauth.NewConnector(context.Background(), awsauth.Options{
-		DSN:  "postgres://u@h:5432/d?sslmode=require",
-		Mode: awsauth.ModeRDSIAM,
+		Conn:          conn,
+		UserExplicit:  userExplicit,
+		SSLModePinned: sslModePinned,
+		Mode:          awsauth.ModeRDSIAM,
 	})
 	if err == nil || !strings.Contains(err.Error(), "needs a region") {
 		t.Fatalf("want a region error, got %v", err)
 	}
+}
+
+// resolve does what the CLI does before it reaches this package: merge the DSN
+// with the connection flags and report what the caller named explicitly.
+func resolve(t *testing.T, dsn string) (*pgx.ConnConfig, bool, bool) {
+	t.Helper()
+	co := conninfo.Options{DSN: dsn}
+	cfg, err := co.Resolve()
+	if err != nil {
+		t.Fatalf("resolve %q: %v", dsn, err)
+	}
+	return cfg, co.UserExplicit(), co.SSLModePinned()
 }
 
 // writeCABundle writes a throwaway self-signed certificate; only the fact that

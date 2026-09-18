@@ -14,6 +14,7 @@ import (
 	"github.com/mirakui/pgroledef/internal/awsauth"
 	"github.com/mirakui/pgroledef/internal/catalog"
 	"github.com/mirakui/pgroledef/internal/config"
+	"github.com/mirakui/pgroledef/internal/conninfo"
 	"github.com/mirakui/pgroledef/internal/jsonnetx"
 	"github.com/mirakui/pgroledef/internal/plan"
 )
@@ -23,6 +24,10 @@ var (
 	flagExtStrs     []string
 	flagJPaths      []string
 	flagDSN         string
+	flagHost        string
+	flagPort        string
+	flagUser        string
+	flagDBName      string
 	flagOut         string
 	flagAuth        string
 	flagRegion      string
@@ -30,6 +35,13 @@ var (
 )
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "pgroledef",
 		Short:         "Declarative, authoritative role management for Aurora PostgreSQL / Aurora DSQL",
@@ -125,13 +137,17 @@ func main() {
 		c.Flags().StringVar(&flagAuth, "auth", "", "how to authenticate: password, rds-iam, dsql, dsql-admin (default: password on aurora-postgresql, dsql-admin on dsql)")
 		c.Flags().StringVar(&flagRegion, "region", "", "AWS region for IAM token signing (default: the AWS SDK's resolved region)")
 		c.Flags().StringVar(&flagSSLRootCert, "sslrootcert", "", "CA bundle for verify-full; Aurora needs the RDS bundle")
+		c.Flags().StringVarP(&flagHost, "host", "h", "", "database server host (default: $PGHOST, then the DSN)")
+		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: $PGPORT, then the DSN)")
+		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: $PGUSER, then the DSN)")
+		c.Flags().StringVarP(&flagDBName, "dbname", "d", "", "database to connect to (default: $PGDATABASE, then the DSN)")
+		// -h belongs to the host here, as it does in psql. Registering help
+		// first stops cobra from claiming the shorthand for itself.
+		c.Flags().Bool("help", false, "help for "+c.Name())
 	}
 
 	root.AddCommand(render, validate, planCmd, applyCmd, newVersionCmd())
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 func loadConfig() (*config.Config, error) {
@@ -185,14 +201,27 @@ func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, e
 		}
 		mode = m
 	}
+	co := conninfo.Options{
+		DSN:      flagDSN,
+		Host:     flagHost,
+		Port:     flagPort,
+		User:     flagUser,
+		Database: flagDBName,
+	}
+	connCfg, err := co.Resolve()
+	if err != nil {
+		return nil, err
+	}
 	if !mode.UsesToken() {
-		return catalog.NewDSNConnector(flagDSN)
+		return catalog.NewConnConfigConnector(connCfg), nil
 	}
 	return awsauth.NewConnector(ctx, awsauth.Options{
-		DSN:         flagDSN,
-		Mode:        mode,
-		Region:      flagRegion,
-		SSLRootCert: flagSSLRootCert,
+		Conn:          connCfg,
+		UserExplicit:  co.UserExplicit(),
+		SSLModePinned: co.SSLModePinned(),
+		Mode:          mode,
+		Region:        flagRegion,
+		SSLRootCert:   flagSSLRootCert,
 	})
 }
 
