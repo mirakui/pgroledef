@@ -61,6 +61,12 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 - The supported-version matrix lives in four places that must stay in sync:
   `internal/config/types.go`, `docker-compose.yml`, `.github/workflows/ci.yml`
   and the `test:NN` tasks in `mise.toml`. `MAINTAIN` is PG 17+ only.
+- `-h` is the host on `plan` / `apply`, not help; those two register `--help`
+  themselves so cobra does not take the shorthand. `internal/conninfo` is the
+  one place the DSN and the `-h/-p/-U/-d` flags are merged, and it merges them
+  into the connection string *before* parsing it: pgx derives the TLS config,
+  the host fallbacks and the `.pgpass` lookup from that string, so patching
+  `Host` on a parsed `ConnConfig` leaves all three pointing at the old host.
 - `plan` exits 2 when there is a diff — that is the contract, not a bug.
 - Keep `DisallowUnknownFields()`: typos in declarations must fail before we connect.
 - Scratch scripts go in `.cctmp/scratch/` (gitignored).

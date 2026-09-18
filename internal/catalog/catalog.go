@@ -106,6 +106,10 @@ func NewDSNConnector(dsn string) (*DSNConnector, error) {
 	return &DSNConnector{Base: cfg}, nil
 }
 
+// NewConnConfigConnector wraps settings that were already resolved, which is
+// how the CLI hands over a DSN that the -h/-p/-U/-d flags have overridden.
+func NewConnConfigConnector(cfg *pgx.ConnConfig) *DSNConnector { return &DSNConnector{Base: cfg} }
+
 func (c *DSNConnector) Connect(ctx context.Context, database string) (*pgx.Conn, error) {
 	cfg := c.Base.Copy()
 	if database != "" {
