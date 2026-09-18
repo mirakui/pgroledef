@@ -67,6 +67,11 @@ Run `mise run test` and `mise run lint` before handing work back. Run
   into the connection string *before* parsing it: pgx derives the TLS config,
   the host fallbacks and the `.pgpass` lookup from that string, so patching
   `Host` on a parsed `ConnConfig` leaves all three pointing at the old host.
+- The password prompt only fires on SQLSTATE class 28 and only with a terminal
+  on stdin; both guards keep CI failing with the server's error instead of
+  hanging. `DSNConnector` asks at most once and reuses the answer, and reading
+  the password restores the terminal on SIGINT — an echo-less shell is the one
+  way this feature can outlive the process.
 - `plan` exits 2 when there is a diff — that is the contract, not a bug.
 - Keep `DisallowUnknownFields()`: typos in declarations must fail before we connect.
 - Scratch scripts go in `.cctmp/scratch/` (gitignored).

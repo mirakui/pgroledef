@@ -4,11 +4,13 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // PrivSet is a set of privilege names as reported by aclexplode().
@@ -95,8 +97,19 @@ type Connector interface {
 	Connect(ctx context.Context, database string) (*pgx.Conn, error)
 }
 
+// PasswordPrompt asks the operator for a password. It is called at most once,
+// after the server has rejected the connection for want of one.
+type PasswordPrompt func(ctx context.Context) (string, error)
+
 // DSNConnector derives per-database connections from a base DSN.
-type DSNConnector struct{ Base *pgx.ConnConfig }
+type DSNConnector struct {
+	Base *pgx.ConnConfig
+	// Prompt, when set, is called the first time the server rejects the
+	// connection with an authorization error. The answer is kept in Base, so
+	// the operator is asked once however many databases the plan reads.
+	Prompt   PasswordPrompt
+	prompted bool
+}
 
 func NewDSNConnector(dsn string) (*DSNConnector, error) {
 	cfg, err := pgx.ParseConfig(dsn)
@@ -110,16 +123,57 @@ func NewDSNConnector(dsn string) (*DSNConnector, error) {
 // how the CLI hands over a DSN that the -h/-p/-U/-d flags have overridden.
 func NewConnConfigConnector(cfg *pgx.ConnConfig) *DSNConnector { return &DSNConnector{Base: cfg} }
 
+// SetPassword overrides the password the DSN carries and suppresses the
+// interactive retry: the caller has already asked.
+func (c *DSNConnector) SetPassword(password string) {
+	c.Base.Password = password
+	c.prompted = true
+}
+
 func (c *DSNConnector) Connect(ctx context.Context, database string) (*pgx.Conn, error) {
 	cfg := c.Base.Copy()
 	if database != "" {
 		cfg.Database = database
 	}
 	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err == nil {
+		return conn, nil
+	}
+	if !c.shouldPrompt(err) {
+		return nil, fmt.Errorf("connect to database %q: %w", cfg.Database, err)
+	}
+	c.prompted = true
+	password, promptErr := c.Prompt(ctx)
+	if promptErr != nil {
+		return nil, fmt.Errorf("connect to database %q: %w (reading a password instead: %v)", cfg.Database, err, promptErr)
+	}
+	c.Base.Password = password
+	cfg.Password = password
+	conn, err = pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database %q: %w", cfg.Database, err)
 	}
 	return conn, nil
+}
+
+// shouldPrompt reports whether err is the server turning us away over
+// credentials. Class 28 is the whole authorization family: 28P01 is the failed
+// password, and 28000 is what the server reports for every other
+// authentication method, several of which are password-driven on Aurora.
+// Taking the class whole asks once too often — a missing role answers 28000
+// too, and no password fixes that — but that costs a wasted prompt, where
+// narrowing to 28P01 would leave legitimate setups unprompted. Anything
+// outside the class, an unreachable host or a missing database, is not about
+// credentials at all.
+func (c *DSNConnector) shouldPrompt(err error) bool {
+	if c.Prompt == nil || c.prompted {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "28")
 }
 
 // ReadCluster reads roles, memberships and database-level ACLs using the

@@ -3,13 +3,13 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
 	"github.com/mirakui/pgroledef/internal/awsauth"
@@ -30,6 +30,8 @@ var (
 	flagPort        string
 	flagUser        string
 	flagDBName      string
+	flagPassword    bool
+	flagNoPassword  bool
 	flagOut         string
 	flagAuth        string
 	flagRegion      string
@@ -87,7 +89,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "plan",
 		Short: "Show the SQL needed to reconcile the database with the declaration",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			p, _, err := buildPlan(cmd.Context())
+			p, _, err := buildPlan(cmd)
 			if err != nil {
 				return err
 			}
@@ -106,7 +108,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Execute the plan against the database",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			p, connector, err := buildPlan(cmd.Context())
+			p, connector, err := buildPlan(cmd)
 			if err != nil {
 				return err
 			}
@@ -145,6 +147,9 @@ func newRootCmd() *cobra.Command {
 		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: the DSN, then $PGPORT)")
 		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: the DSN, then $PGUSER)")
 		c.Flags().StringVarP(&flagDBName, "dbname", "d", "", "database to connect to (default: the DSN, then $PGDATABASE)")
+		c.Flags().BoolVarP(&flagPassword, "password", "W", false, "prompt for the password before connecting instead of waiting for the server to ask")
+		c.Flags().BoolVarP(&flagNoPassword, "no-password", "w", false, "never prompt; fail with the server's error if a password is missing")
+		c.MarkFlagsMutuallyExclusive("password", "no-password")
 		// -h belongs to the host here, as it does in psql. Registering help
 		// first stops cobra from claiming the shorthand for itself.
 		c.Flags().Bool("help", false, "help for "+c.Name())
@@ -185,12 +190,13 @@ func loadConfig() (*config.Config, error) {
 	return config.Validate(cfg)
 }
 
-func buildPlan(ctx context.Context) (*plan.Plan, catalog.Connector, error) {
+func buildPlan(cmd *cobra.Command) (*plan.Plan, catalog.Connector, error) {
+	ctx := cmd.Context()
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, nil, err
 	}
-	connector, err := newConnector(ctx, cfg)
+	connector, err := newConnector(cmd, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -204,7 +210,7 @@ func buildPlan(ctx context.Context) (*plan.Plan, catalog.Connector, error) {
 // newConnector picks the authentication mode. Aurora accepts a password, so it
 // stays the default there; DSQL has no passwords at all, so it defaults to an
 // admin token.
-func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, error) {
+func newConnector(cmd *cobra.Command, cfg *config.Config) (catalog.Connector, error) {
 	mode := defaultAuthMode(cfg.Target.Engine)
 	if flagAuth != "" {
 		m, err := awsauth.ParseMode(flagAuth)
@@ -225,14 +231,50 @@ func newConnector(ctx context.Context, cfg *config.Config) (catalog.Connector, e
 		return nil, err
 	}
 	if !mode.UsesToken() {
-		return catalog.NewConnConfigConnector(resolved.Conn), nil
+		return newDSNConnector(cmd, resolved.Conn)
 	}
-	return awsauth.NewConnector(ctx, awsauth.Options{
+	if flagPassword {
+		// Naming --auth would be misleading when the mode came from the
+		// engine's default and the user never typed the flag.
+		how := "--auth " + string(mode)
+		if flagAuth == "" {
+			how = fmt.Sprintf("the %s token mode, the default for engine %s", mode, cfg.Target.Engine)
+		}
+		return nil, fmt.Errorf("--password cannot be used with %s: a token is signed, never typed", how)
+	}
+	return awsauth.NewConnector(cmd.Context(), awsauth.Options{
 		Resolved:    resolved,
 		Mode:        mode,
 		Region:      flagRegion,
 		SSLRootCert: flagSSLRootCert,
 	})
+}
+
+// newDSNConnector arranges for the password to be typed rather than put on the
+// command line: --password asks up front, and otherwise the connector asks only
+// if the server turns out to want one. Neither happens without a terminal, or
+// with --no-password, so scripts keep failing with the server's own error.
+func newDSNConnector(cmd *cobra.Command, connCfg *pgx.ConnConfig) (catalog.Connector, error) {
+	c := catalog.NewConnConfigConnector(connCfg)
+	if flagNoPassword {
+		return c, nil
+	}
+	if !isTerminal(cmd.InOrStdin()) {
+		if flagPassword {
+			return nil, fmt.Errorf("--password needs a terminal to read from")
+		}
+		return c, nil
+	}
+	if flagPassword {
+		password, err := promptPassword(cmd, c.Base.User)
+		if err != nil {
+			return nil, err
+		}
+		c.SetPassword(password)
+		return c, nil
+	}
+	c.Prompt = passwordPrompter(cmd, c.Base.User)
+	return c, nil
 }
 
 func defaultAuthMode(engine config.Engine) awsauth.Mode {
