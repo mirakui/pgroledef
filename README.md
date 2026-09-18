@@ -71,6 +71,8 @@ go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging 
 | `-p`, `--port` | `-p` | the DSN, then `$PGPORT` |
 | `-U`, `--username` | `-U` | the DSN, then `$PGUSER` |
 | `-d`, `--dbname` | `-d` | the DSN, then `$PGDATABASE` |
+| `-W`, `--password` | `-W` | [the prompt](#the-password) |
+| `-w`, `--no-password` | `-w` | nothing; it turns the prompt off |
 
 The order is the flag, then the DSN, then the environment, which is libpq's.
 `-h` takes psql's spellings too: a comma-separated list of hosts, or a unix
@@ -84,6 +86,33 @@ and `apply`, those two commands spell their help `--help` in full.
 `apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is
 given. The one exception is a statement that gives back a membership pgroledef
 borrowed itself; see [Aurora DSQL](#aurora-dsql).
+
+### The password
+
+The password can stay out of the DSN and out of the environment. When the server
+asks for one, `plan` and `apply` prompt for it on the terminal (without echoing
+it) and retry once; `-W` / `--password` asks up front instead of waiting for the
+rejection. The prompt names the user the connection resolved to, `-U` included,
+and the answer is read once and reused for every database the run touches.
+
+```bash
+go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging \
+  -h localhost -p 55417 -U postgres -d postgres
+# Password for user postgres:
+```
+
+Without a terminal on stdin — a pipe, a CI job — nothing is prompted and the
+server's authentication error is reported as before, so scripts fail instead of
+hanging. `-w` / `--no-password` turns the prompt off on a terminal too, for a
+script that wants the same failure while being run by hand. `PGPASSWORD` and
+`~/.pgpass` still work; the prompt fills the gap when neither has an answer, or
+when the answer they have is rejected. `--password` does not apply to the IAM
+token modes below, which use no password at all.
+
+The prompt reads stdin rather than the controlling terminal, so feeding `apply`
+its confirmation (`echo yes | pgroledef apply …`) also turns the password
+prompt off; pass the password some other way, or use `--auto-approve` and keep
+stdin free.
 
 ### Writing the plan to a SQL file
 
@@ -144,7 +173,7 @@ lifetime never has to be managed.
 
 | `--auth` | Signs | Needs |
 |---|---|---|
-| `password` (default on `aurora-postgresql`) | nothing; the password comes from the DSN or `PG*` | — |
+| `password` (default on `aurora-postgresql`) | nothing; the password comes from the DSN, `PG*`, or [the prompt](#the-password) | — |
 | `rds-iam` | an Aurora PostgreSQL IAM database authentication token | `rds-db:connect` on `dbuser:<cluster-resource-id>/<role>`, and the role must be a member of `rds_iam` |
 | `dsql-admin` (default on `dsql`) | an Aurora DSQL token for `admin` | `dsql:DbConnectAdmin` |
 | `dsql` | an Aurora DSQL token for a custom role | `dsql:DbConnect` |
