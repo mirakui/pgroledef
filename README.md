@@ -316,13 +316,13 @@ role, then as the SQL that will be executed.
 
 SQL:
   -- cluster
-  + ALTER ROLE "migrator" WITH LOGIN;
-  + CREATE ROLE "worker" WITH LOGIN;
-  + GRANT "rds_iam" TO "migrator";
+  ALTER ROLE "migrator" WITH LOGIN;
+  CREATE ROLE "worker" WITH LOGIN;
+  GRANT "rds_iam" TO "migrator";
   -- app
-  + GRANT INSERT, SELECT ON TABLE "public"."jobs" TO "worker";
-  - REVOKE DELETE ON TABLE "public"."orders" FROM "grp_viewer";  -- privilege not declared
-  + ALTER DEFAULT PRIVILEGES FOR ROLE "migrator" IN SCHEMA "public" GRANT SELECT ON TABLES TO "grp_viewer";
+  GRANT INSERT, SELECT ON TABLE "public"."jobs" TO "worker";
+  REVOKE DELETE ON TABLE "public"."orders" FROM "grp_viewer";  -- privilege not declared
+  ALTER DEFAULT PRIVILEGES FOR ROLE "migrator" IN SCHEMA "public" GRANT SELECT ON TABLES TO "grp_viewer";
 
 Plan: 6 statement(s), 1 destructive.
 ```
@@ -346,8 +346,10 @@ Reading the diff:
   (database, schema, `ALL ... IN SCHEMA`, relation), with default privileges last.
 
 In the SQL section, statements are grouped by the database they run in
-(`cluster` means the connector's default database), `-` marks a destructive
-statement (REVOKE / NOLOGIN) and the trailing `--` comment says why it is there.
+(`cluster` means the connector's default database), and each statement is
+printed as it will be executed, without a diff mark. Destructive statements
+(REVOKE / NOLOGIN) are shown in red and carry a trailing `--` comment saying why
+they are there.
 
 When nothing differs, the output is a single line:
 
