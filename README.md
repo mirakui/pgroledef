@@ -67,7 +67,9 @@ borrowed itself; see [Aurora DSQL](#aurora-dsql).
 `plan --out FILE` (`-o`) writes the same plan to `FILE` as an executable psql
 script, in addition to printing it. Statements appear in the order `apply` would
 run them: cluster-level ones first, then one block per database introduced by
-`\connect`. Destructive statements and notes are kept as trailing comments.
+`\connect`. On Aurora PostgreSQL each block is wrapped in `BEGIN; … COMMIT;`,
+just as `apply` runs it, so a failure rolls that database back. Destructive
+statements and notes are kept as trailing comments.
 
 ```bash
 go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging --out pgroledef-plan.sql
@@ -79,27 +81,37 @@ psql -v ON_ERROR_STOP=1 -f pgroledef-plan.sql "$PGROLEDEF_DSN"
 -- Run with: psql -v ON_ERROR_STOP=1 -f <this file>
 
 -- cluster (current database)
+BEGIN;
 CREATE ROLE "grp_shopfront_reader" WITH NOLOGIN;
 REVOKE "grp_shopfront_writer" FROM "shopfront_api";  -- destructive: membership not declared
+COMMIT;
 
 -- shopfront
 \connect "shopfront"
+BEGIN;
 GRANT USAGE ON SCHEMA "public" TO "grp_shopfront_reader";
+COMMIT;
 ```
 
-Unlike `apply`, the script has no transaction of its own, so run it with
-`ON_ERROR_STOP=1`. The file is written even when there is no diff (comments
-only), and `--out` does not change the exit code.
+Run it with `ON_ERROR_STOP=1`: without it psql keeps going after an error, and
+the `COMMIT` of an aborted transaction is a rollback, so later blocks would run
+against a half-applied cluster. Do not add `-1` / `--single-transaction`: the
+script manages its own transactions, and `\connect` would discard the outer
+one anyway. The transaction is per database, not per script — `\connect`
+drops an open transaction, so the `COMMIT` has to come before it — which is
+the same granularity `apply` uses. The file is written even when there is no
+diff (comments only), and `--out` does not change the exit code.
 
-One hazard is specific to the script. To set default privileges on behalf of a
-creator role, the plan borrows an inheriting membership in it and hands it back
-two statements later. `apply` runs those inside one transaction on Aurora, so a
-failure rolls the borrow back; the script does not, so a failure in between
-leaves the executing user inheriting everything that creator has — including
-`rds_iam`, which disables password authentication for it. If that happens,
-reconnect with `--auth rds-iam` (the borrow just made that possible) and run
-`plan` again: it proposes handing the borrow back. Wrapping the script in
-`BEGIN; … COMMIT;` avoids the window on Aurora.
+On Aurora DSQL the script has no `BEGIN`/`COMMIT` at all, because DSQL takes
+one DDL statement per transaction; the header comment says so. As with `apply`
+there, a failure leaves the statements before it in place, and re-running
+`plan` converges. Two things differ from `apply`. psql does not retry
+serialization failures (SQLSTATE 40001) the way `apply` does, so a concurrent
+catalog change stops the script where `apply` would have backed off and
+retried; re-run it. And the borrowed membership described under
+[Aurora DSQL](#aurora-dsql) is not returned on failure: a failure between the
+borrow and its return leaves the executing user inheriting everything the
+creator role has.
 
 ## Connecting with AWS IAM authentication
 
