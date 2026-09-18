@@ -29,9 +29,9 @@ const wantPlainPlan = `+ role "worker"
 
 SQL:
   -- cluster
-  + CREATE ROLE "worker" WITH LOGIN;
+  CREATE ROLE "worker" WITH LOGIN;
   -- app
-  - REVOKE DELETE ON TABLE "public"."orders" FROM "grp_viewer";  -- privilege not declared
+  REVOKE DELETE ON TABLE "public"."orders" FROM "grp_viewer";  -- privilege not declared
 
 Plan: 2 statement(s), 1 destructive.
 `
@@ -66,8 +66,8 @@ func TestPrintPlanColorMarks(t *testing.T) {
 	printPlan(&b, termcolor.New(true), samplePlan(config.EngineDSQL))
 	got := b.String()
 	for _, want := range []string{
-		"\x1b[32m+ CREATE ROLE",                              // added statement: green
-		"\x1b[31m- REVOKE DELETE",                            // destructive statement: red
+		"\x1b[32mCREATE ROLE",                                // added statement: green
+		"\x1b[31mREVOKE DELETE",                              // destructive statement: red
 		"\x1b[2m-- cluster\x1b[0m",                           // database label: dim
 		"\x1b[2m-- privilege not declared\x1b[0m",            // trailing reason: dim
 		"\x1b[1mSQL:\x1b[0m",                                 // heading: bold

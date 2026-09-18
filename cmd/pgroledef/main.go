@@ -328,11 +328,11 @@ func printPlan(out io.Writer, pal *termcolor.Palette, p *plan.Plan) {
 			if s.Database != db {
 				continue
 			}
-			mark, style := "+", termcolor.Green
+			style := termcolor.Green
 			if s.Destructive {
-				mark, style = "-", termcolor.Red
+				style = termcolor.Red
 			}
-			fmt.Fprintf(out, "  %s", pal.Paint(fmt.Sprintf("%s %s;", mark, s.SQL), style))
+			fmt.Fprintf(out, "  %s", pal.Paint(s.SQL+";", style))
 			if s.Note != "" {
 				fmt.Fprintf(out, "  %s", pal.Dim("-- "+s.Note))
 			}
