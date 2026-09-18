@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/mirakui/pgroledef/internal/termcolor"
 )
 
 // RoleDiff is the human-readable, declaration-shaped change for one role:
@@ -128,34 +130,35 @@ func (k objectKey) displayTarget() string {
 	panic("unknown kind " + k.Kind)
 }
 
-// WriteDiff prints the declaration-shaped diff. It writes nothing when there
-// is no change.
-func (p *Plan) WriteDiff(w io.Writer) {
+// WriteDiff prints the declaration-shaped diff, styled with pal. It writes
+// nothing when there is no change. Pass a disabled palette (or nil) for plain
+// text; the plain output is compared byte-for-byte by the tests.
+func (p *Plan) WriteDiff(w io.Writer, pal *termcolor.Palette) {
 	for _, rd := range p.RoleDiffs {
-		mark := "~"
+		mark, style := "~", termcolor.Yellow
 		if rd.Created {
-			mark = "+"
+			mark, style = "+", termcolor.Green
 		}
-		fmt.Fprintf(w, "%s role %q\n", mark, rd.Name)
+		fmt.Fprintln(w, pal.Paint(fmt.Sprintf("%s role %q", mark, rd.Name), termcolor.Bold, style))
 		if rd.LoginChanged {
 			if rd.Created {
-				fmt.Fprintf(w, "  + login:     %t\n", rd.LoginAfter)
+				attr(w, pal, termcolor.Green, "+ login:     %t", rd.LoginAfter)
 			} else {
-				fmt.Fprintf(w, "  ~ login:     %t -> %t\n", rd.LoginBefore, rd.LoginAfter)
+				attr(w, pal, termcolor.Yellow, "~ login:     %t -> %t", rd.LoginBefore, rd.LoginAfter)
 			}
 		}
 		if rd.MembersChanged {
 			if rd.Created {
-				fmt.Fprintf(w, "  + member_of: %s\n", list(rd.MembersAfter))
+				attr(w, pal, termcolor.Green, "+ member_of: %s", list(rd.MembersAfter))
 			} else {
-				fmt.Fprintf(w, "  ~ member_of: %s -> %s\n", list(rd.MembersBefore), list(rd.MembersAfter))
+				attr(w, pal, termcolor.Yellow, "~ member_of: %s -> %s", list(rd.MembersBefore), list(rd.MembersAfter))
 			}
 		}
 		if rd.PrincipalsChanged {
 			if rd.Created {
-				fmt.Fprintf(w, "  + iam_principals: %s\n", list(rd.PrincipalsAfter))
+				attr(w, pal, termcolor.Green, "+ iam_principals: %s", list(rd.PrincipalsAfter))
 			} else {
-				fmt.Fprintf(w, "  ~ iam_principals: %s -> %s\n", list(rd.PrincipalsBefore), list(rd.PrincipalsAfter))
+				attr(w, pal, termcolor.Yellow, "~ iam_principals: %s -> %s", list(rd.PrincipalsBefore), list(rd.PrincipalsAfter))
 			}
 		}
 		for _, pd := range rd.Privileges {
@@ -163,22 +166,29 @@ func (p *Plan) WriteDiff(w io.Writer) {
 			if pd.Default {
 				kind = "default privileges"
 			}
-			mark := "~"
-			if len(pd.Removed) == 0 {
-				mark = "+"
-			} else if len(pd.Added) == 0 {
-				mark = "-"
+			mark, style := "~", termcolor.Yellow
+			switch {
+			case len(pd.Removed) == 0:
+				mark, style = "+", termcolor.Green
+			case len(pd.Added) == 0:
+				mark, style = "-", termcolor.Red
 			}
-			fmt.Fprintf(w, "  %s %s %s:\n", mark, kind, pd.Label)
+			attr(w, pal, style, "%s %s %s:", mark, kind, pd.Label)
 			for _, priv := range pd.Added {
-				fmt.Fprintf(w, "      + %s\n", priv)
+				fmt.Fprintf(w, "      %s\n", pal.Add("+ "+priv))
 			}
 			for _, priv := range pd.Removed {
-				fmt.Fprintf(w, "      - %s\n", priv)
+				fmt.Fprintf(w, "      %s\n", pal.Remove("- "+priv))
 			}
 		}
 		fmt.Fprintln(w)
 	}
+}
+
+// attr prints one indented attribute line, styled as a whole so the mark and
+// the text share a colour.
+func attr(w io.Writer, pal *termcolor.Palette, style termcolor.Style, format string, args ...any) {
+	fmt.Fprintf(w, "  %s\n", pal.Paint(fmt.Sprintf(format, args...), style))
 }
 
 func list(ss []string) string {

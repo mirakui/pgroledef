@@ -282,6 +282,20 @@ When nothing differs, the output is a single line:
 No changes. The database matches the declaration.
 ```
 
+### Colour
+
+On a terminal both sections are coloured the way `terraform plan` colours its
+own: green for what is added, red for what is removed or destructive, yellow for
+an in-place change, bold for the role and section headings, and dim for the
+`--` comments. The text itself is the same either way, so stripping the colour
+gives back exactly the output shown above.
+
+Colour is off when the output is not a terminal (a pipe, a file, CI logs), when
+`NO_COLOR` is set to anything non-empty, when `TERM=dumb`, or when `plan` /
+`apply` is given `--no-color`. To keep the colour through a pipe anyway — a CI
+log viewer that renders ANSI, say — set `FORCE_COLOR=1` or `CLICOLOR_FORCE=1`;
+`--no-color` and `NO_COLOR` still win over both.
+
 ## Declaration format
 
 The jsonnet must evaluate to the canonical form below. Unknown fields, unknown

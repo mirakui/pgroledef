@@ -29,6 +29,7 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 - `internal/catalog` — reads actual state from the PostgreSQL catalogs
 - `internal/plan` — `Diff` (pure), `Build` (does I/O), `Apply`, diff rendering
 - `internal/jsonnetx` — go-jsonnet wrapper
+- `internal/termcolor` — the ANSI palette and the TTY / environment decision
 - `testdata/golden` — byte-compared render output; `testdata/invalid` — `.jsonnet` + `.want` pairs
 
 ## Conventions
@@ -54,6 +55,8 @@ Run `mise run test` and `mise run lint` before handing work back. Run
   the diff. Never hand-edit `testdata/golden/*.json`.
 - `diff_display_test.go` pins the exact diff text, and README's "Plan output"
   section shows the same output. Changing `WriteDiff` means updating both.
+  Colour must only wrap that text: the coloured test strips the escapes and
+  compares against the same string, so never fold styling into the wording.
 - Every `testdata/invalid/*.jsonnet` needs a sibling `.want` (substring match).
 - The supported-version matrix lives in four places that must stay in sync:
   `internal/config/types.go`, `docker-compose.yml`, `.github/workflows/ci.yml`
