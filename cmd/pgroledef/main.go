@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/mirakui/pgroledef/internal/conninfo"
 	"github.com/mirakui/pgroledef/internal/jsonnetx"
 	"github.com/mirakui/pgroledef/internal/plan"
+	"github.com/mirakui/pgroledef/internal/termcolor"
 )
 
 var (
@@ -32,6 +34,7 @@ var (
 	flagAuth        string
 	flagRegion      string
 	flagSSLRootCert string
+	flagNoColor     bool
 )
 
 func main() {
@@ -88,7 +91,7 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printPlan(cmd, p)
+			printPlan(cmd.OutOrStdout(), palette(cmd.OutOrStdout()), p)
 			if err := writePlanSQL(cmd, p); err != nil {
 				return err
 			}
@@ -107,7 +110,7 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printPlan(cmd, p)
+			printPlan(cmd.OutOrStdout(), palette(cmd.OutOrStdout()), p)
 			if p.Empty() {
 				return nil
 			}
@@ -137,6 +140,7 @@ func newRootCmd() *cobra.Command {
 		c.Flags().StringVar(&flagAuth, "auth", "", "how to authenticate: password, rds-iam, dsql, dsql-admin (default: password on aurora-postgresql, dsql-admin on dsql)")
 		c.Flags().StringVar(&flagRegion, "region", "", "AWS region for IAM token signing (default: the AWS SDK's resolved region)")
 		c.Flags().StringVar(&flagSSLRootCert, "sslrootcert", "", "CA bundle for verify-full; Aurora needs the RDS bundle")
+		c.Flags().BoolVar(&flagNoColor, "no-color", false, "disable coloured output (also honours NO_COLOR)")
 		c.Flags().StringVarP(&flagHost, "host", "h", "", "database server host (default: the DSN, then $PGHOST)")
 		c.Flags().StringVarP(&flagPort, "port", "p", "", "database server port (default: the DSN, then $PGPORT)")
 		c.Flags().StringVarP(&flagUser, "username", "U", "", "database user name (default: the DSN, then $PGUSER)")
@@ -257,35 +261,38 @@ func writePlanSQL(cmd *cobra.Command, p *plan.Plan) error {
 	return nil
 }
 
-func printPlan(cmd *cobra.Command, p *plan.Plan) {
-	out := cmd.OutOrStdout()
+// printPlan writes the diff and the SQL that follows it. out and pal are
+// passed in rather than taken from the command so the rendering can be tested
+// on its own.
+func printPlan(out io.Writer, pal *termcolor.Palette, p *plan.Plan) {
 	if p.Empty() {
-		fmt.Fprintln(out, "No changes. The database matches the declaration.")
+		fmt.Fprintln(out, pal.Bold("No changes. The database matches the declaration."))
 		return
 	}
-	p.WriteDiff(out)
+	p.WriteDiff(out, pal)
 	if !p.Dialect.Atomic() {
-		fmt.Fprintf(out, "Note: %s applies one statement per transaction, so a failure leaves\n"+
-			"      the statements before it in place. Re-run to converge.\n\n", p.Dialect.Engine)
+		fmt.Fprintf(out, "%s\n\n", pal.Change(fmt.Sprintf(
+			"Note: %s applies one statement per transaction, so a failure leaves\n"+
+				"      the statements before it in place. Re-run to converge.", p.Dialect.Engine)))
 	}
-	fmt.Fprintln(out, "SQL:")
+	fmt.Fprintln(out, pal.Bold("SQL:"))
 	for _, db := range p.Databases() {
 		label := db
 		if label == "" {
 			label = "cluster"
 		}
-		fmt.Fprintf(out, "  -- %s\n", label)
+		fmt.Fprintf(out, "  %s\n", pal.Dim("-- "+label))
 		for _, s := range p.Statements {
 			if s.Database != db {
 				continue
 			}
-			mark := "+"
+			mark, style := "+", termcolor.Green
 			if s.Destructive {
-				mark = "-"
+				mark, style = "-", termcolor.Red
 			}
-			fmt.Fprintf(out, "  %s %s;", mark, s.SQL)
+			fmt.Fprintf(out, "  %s", pal.Paint(fmt.Sprintf("%s %s;", mark, s.SQL), style))
 			if s.Note != "" {
-				fmt.Fprintf(out, "  -- %s", s.Note)
+				fmt.Fprintf(out, "  %s", pal.Dim("-- "+s.Note))
 			}
 			fmt.Fprintln(out)
 		}
@@ -296,5 +303,11 @@ func printPlan(cmd *cobra.Command, p *plan.Plan) {
 			d++
 		}
 	}
-	fmt.Fprintf(out, "\nPlan: %d statement(s), %d destructive.\n", n, d)
+	fmt.Fprintf(out, "\n%s\n", pal.Bold(fmt.Sprintf("Plan: %d statement(s), %d destructive.", n, d)))
+}
+
+// palette decides whether the plan output is coloured: --no-color always wins,
+// otherwise colour follows the terminal.
+func palette(out io.Writer) *termcolor.Palette {
+	return termcolor.New(!flagNoColor && termcolor.Detect(out))
 }
