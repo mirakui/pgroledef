@@ -46,330 +46,40 @@ binary (`--version` prints the same line).
 
 ## Quick start
 
+From a clone of this repository (`go install` above puts `pgroledef` on your
+`PATH`; `go run ./cmd/pgroledef` works in its place):
+
 ```bash
 mise install
 mise run db:up                                   # PostgreSQL 16, 17 and 18 with an Aurora-like fixture
 export PGROLEDEF_DSN=postgres://postgres:postgres@localhost:55417/postgres
 
-go run ./cmd/pgroledef validate -f examples/shopfront.jsonnet --ext-str env=staging
-go run ./cmd/pgroledef render   -f examples/shopfront.jsonnet --ext-str env=staging
-go run ./cmd/pgroledef plan     -f examples/shopfront.jsonnet --ext-str env=staging
-go run ./cmd/pgroledef apply    -f examples/shopfront.jsonnet --ext-str env=staging
+pgroledef validate -f examples/shopfront.jsonnet --ext-str env=staging
+pgroledef render   -f examples/shopfront.jsonnet --ext-str env=staging
+pgroledef plan     -f examples/shopfront.jsonnet --ext-str env=staging
+pgroledef apply    -f examples/shopfront.jsonnet --ext-str env=staging
 ```
 
-`plan` and `apply` also take the psql spellings, which override whatever the
-DSN said, so the connection can be named without one:
+| command | does |
+|---|---|
+| `validate` | evaluate the jsonnet and check it offline; no connection |
+| `render` | the same, then print the normalized canonical JSON |
+| `plan` | connect, diff the declaration against the catalog, print the diff and the SQL |
+| `apply` | the same, then ask for confirmation and run the SQL |
+
+`plan` and `apply` also take psql's `-h -p -U -d`, which override the DSN, and
+prompt for the password when the server asks for one:
 
 ```bash
-go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging \
+pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging \
   -h localhost -p 55417 -U postgres -d postgres
 ```
 
-| flag | psql | falls back to |
-|---|---|---|
-| `-h`, `--host` | `-h` | the DSN, then `$PGHOST` |
-| `-p`, `--port` | `-p` | the DSN, then `$PGPORT` |
-| `-U`, `--username` | `-U` | the DSN, then `$PGUSER` |
-| `-d`, `--dbname` | `-d` | the DSN, then `$PGDATABASE` |
-| `-W`, `--password` | `-W` | [the prompt](#the-password) |
-| `-w`, `--no-password` | `-w` | nothing; it turns the prompt off |
-
-The order is the flag, then the DSN, then the environment, which is libpq's.
-`-h` takes psql's spellings too: a comma-separated list of hosts, or a unix
-socket directory.
-
-`-d` only picks the database the first connection is made to; which databases
-are reconciled comes from the declaration. Because `-h` is the host on `plan`
-and `apply`, those two commands spell their help `--help` in full.
-
-`plan` exits 2 when there is a diff, 0 when the database already matches.
-`apply` refuses plans containing REVOKE / NOLOGIN unless `--allow-destroy` is
-given. The one exception is a statement that gives back a membership pgroledef
-borrowed itself; see [Aurora DSQL](#aurora-dsql).
-
-### The password
-
-The password can stay out of the DSN and out of the environment. When the server
-asks for one, `plan` and `apply` prompt for it on the terminal (without echoing
-it) and retry once; `-W` / `--password` asks up front instead of waiting for the
-rejection. The prompt names the user the connection resolved to, `-U` included,
-and the answer is read once and reused for every database the run touches.
-
-```bash
-go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging \
-  -h localhost -p 55417 -U postgres -d postgres
-# Password for user postgres:
-```
-
-Without a terminal on stdin — a pipe, a CI job — nothing is prompted and the
-server's authentication error is reported as before, so scripts fail instead of
-hanging. `-w` / `--no-password` turns the prompt off on a terminal too, for a
-script that wants the same failure while being run by hand. `PGPASSWORD` and
-`~/.pgpass` still work; the prompt fills the gap when neither has an answer, or
-when the answer they have is rejected. `--password` does not apply to the IAM
-token modes below, which use no password at all.
-
-The prompt reads stdin rather than the controlling terminal, so feeding `apply`
-its confirmation (`echo yes | pgroledef apply …`) also turns the password
-prompt off; pass the password some other way, or use `--auto-approve` and keep
-stdin free.
-
-### Writing the plan to a SQL file
-
-`plan --out FILE` (`-o`) writes the same plan to `FILE` as an executable psql
-script, in addition to printing it. Statements appear in the order `apply` would
-run them: cluster-level ones first, then one block per database introduced by
-`\connect`. On Aurora PostgreSQL each block is wrapped in `BEGIN; … COMMIT;`,
-just as `apply` runs it, so a failure rolls that database back. Destructive
-statements and notes are kept as trailing comments.
-
-```bash
-go run ./cmd/pgroledef plan -f examples/shopfront.jsonnet --ext-str env=staging --out pgroledef-plan.sql
-psql -v ON_ERROR_STOP=1 -f pgroledef-plan.sql "$PGROLEDEF_DSN"
-```
-
-```sql
--- Generated by pgroledef plan.
--- Run with: psql -v ON_ERROR_STOP=1 -f <this file>
-
--- cluster (current database)
-BEGIN;
-CREATE ROLE "grp_shopfront_reader" WITH NOLOGIN;
-REVOKE "grp_shopfront_writer" FROM "shopfront_api";  -- destructive: membership not declared
-COMMIT;
-
--- shopfront
-\connect "shopfront"
-BEGIN;
-GRANT USAGE ON SCHEMA "public" TO "grp_shopfront_reader";
-COMMIT;
-```
-
-Run it with `ON_ERROR_STOP=1`: without it psql keeps going after an error, and
-the `COMMIT` of an aborted transaction is a rollback, so later blocks would run
-against a half-applied cluster. Do not add `-1` / `--single-transaction`: the
-script manages its own transactions, and `\connect` would discard the outer
-one anyway. The transaction is per database, not per script — `\connect`
-drops an open transaction, so the `COMMIT` has to come before it — which is
-the same granularity `apply` uses. The file is written even when there is no
-diff (comments only), and `--out` does not change the exit code.
-
-On Aurora DSQL the script has no `BEGIN`/`COMMIT` at all, because DSQL takes
-one DDL statement per transaction; the header comment says so. As with `apply`
-there, a failure leaves the statements before it in place, and re-running
-`plan` converges. Two things differ from `apply`. psql does not retry
-serialization failures (SQLSTATE 40001) the way `apply` does, so a concurrent
-catalog change stops the script where `apply` would have backed off and
-retried; re-run it. And the borrowed membership described under
-[Aurora DSQL](#aurora-dsql) is not returned on failure: a failure between the
-borrow and its return leaves the executing user inheriting everything the
-creator role has.
-
-## Connecting with AWS IAM authentication
-
-`plan` and `apply` take `--auth` to authenticate with an IAM token instead of a
-password. A fresh token is signed for every connection, so the 15-minute token
-lifetime never has to be managed.
-
-| `--auth` | Signs | Needs |
-|---|---|---|
-| `password` (default on `aurora-postgresql`) | nothing; the password comes from the DSN, `PG*`, or [the prompt](#the-password) | — |
-| `rds-iam` | an Aurora PostgreSQL IAM database authentication token | `rds-db:connect` on `dbuser:<cluster-resource-id>/<role>`, and the role must be a member of `rds_iam` |
-| `dsql-admin` (default on `dsql`) | an Aurora DSQL token for `admin` | `dsql:DbConnectAdmin` |
-| `dsql` | an Aurora DSQL token for a custom role | `dsql:DbConnect` |
-
-Credentials and the region come from the standard AWS SDK chain;
-`--region` overrides the resolved region.
-
-The database user has to be named explicitly, with `-U` or in the DSN or
-`PGUSER`: pgx would
-otherwise fall back to the OS username, and a token signed for the wrong role
-comes back from the server as an opaque PAM failure.
-
-IAM authentication is rejected over a plaintext connection, so unless the DSN
-(or `PGSSLMODE`) pins an `sslmode`, the connection is upgraded to the equivalent
-of `verify-full` and the plaintext attempts are dropped (other hosts in a
-multi-host DSN are kept). Pinning an `sslmode` yourself leaves the verification
-level alone; `--sslrootcert` is installed as the CA either way. Aurora's
-certificates chain to the RDS CA rather than a public root, so pass the bundle:
-
-```bash
-curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-
-export PGROLEDEF_DSN="postgres://shopfront_migrator@mycluster.cluster-abc.ap-northeast-1.rds.amazonaws.com:5432/shopfront"
-pgroledef plan -f roles.jsonnet --auth rds-iam --sslrootcert global-bundle.pem
-
-# the same connection, without a DSN
-pgroledef plan -f roles.jsonnet --auth rds-iam --sslrootcert global-bundle.pem \
-  -h mycluster.cluster-abc.ap-northeast-1.rds.amazonaws.com -p 5432 \
-  -U shopfront_migrator -d shopfront
-```
-
-Aurora DSQL chains to a public root, so no bundle is needed:
-
-```bash
-export PGROLEDEF_DSN="postgres://admin@<cluster-id>.dsql.ap-northeast-1.on.aws:5432/postgres"
-pgroledef plan -f roles.jsonnet --auth dsql-admin
-
-# or: pgroledef plan -f roles.jsonnet --auth dsql-admin \
-#       -h <cluster-id>.dsql.ap-northeast-1.on.aws -U admin -d postgres
-```
-
-The RDS token is signed against `host:port` of the real cluster endpoint, so a
-CNAME in front of it produces a token the server rejects.
-
-## Aurora DSQL
-
-Set `target.engine` to `dsql`. The declaration format is the same, but a DSQL
-cluster constrains it:
-
-| | Aurora PostgreSQL | Aurora DSQL |
-|---|---|---|
-| databases | many | exactly one, always `postgres`; identifiers still spell it out (`postgres.app.jobs`) |
-| `GRANT ... ON DATABASE` | yes | rejected by the server, so rejected by `validate` |
-| IAM identities | `member_of: ['rds_iam']` plus an IAM policy | `iam_principals: ['arn:aws:iam::…:role/…']`, applied as `AWS IAM GRANT` |
-| privileges | all of PostgreSQL's | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `USAGE`, `CREATE`, `TRIGGER` (`TRUNCATE` and `REFERENCES` are rejected even though an owner's own ACL carries them) |
-| `apply` | one transaction per database | **one transaction per statement** |
-
-The last row is the one to plan around. DSQL allows a single DDL statement per
-transaction, and `CREATE ROLE`, `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`
-and `AWS IAM GRANT` are all DDL there, so a role plan cannot be applied
-atomically. `plan` says so, and `apply` logs every statement as it runs, so the
-point of failure is the last line printed. Re-run after fixing the cause: the
-plan is derived from the live catalog, so it converges.
-
-One consequence is worth knowing about. `ALTER DEFAULT PRIVILEGES FOR ROLE`
-needs an inheriting membership in the creator role, so `apply` borrows one and
-hands it straight back. Where that pair is not atomic, a failure in between
-leaves the borrow in place — and nothing would otherwise notice, because the
-next `plan` would see the membership and decide no borrow is needed. `plan`
-therefore proposes handing a leftover borrow back:
-
-```
-- REVOKE INHERIT OPTION FOR "shopfront_migrator" FROM CURRENT_USER;  -- membership borrowed by an earlier apply and never returned
-```
-
-It reads as destructive, because it is a revoke, but it does **not** need
-`--allow-destroy`: recovering from a half-applied run would otherwise also have
-to unlock every other revoke in the plan, which is the opposite of what you
-want at that moment.
-
-More generally, the executing user is normally in `policy.protected_roles`, so
-its own memberships are not declared anywhere — which makes any inheriting
-membership it holds in a managed role undeclared, and pgroledef proposes
-returning it. When no default privilege in the plan still relies on it, that
-one runs at cluster level and does need `--allow-destroy`, since it cannot be
-attributed to a borrow. If you granted it on purpose, declare the privileges it
-carries instead of relying on the membership.
-
-A role's IAM mapping has to be revoked before the role can be dropped, which
-matters if you remove a role by hand — DSQL reports it as
-`role "x" cannot be dropped because some objects depend on it`.
-
-```bash
-export PGROLEDEF_DSN="postgres://admin@<cluster-id>.dsql.ap-northeast-1.on.aws:5432/postgres"
-pgroledef plan  -f roles.jsonnet   # --auth dsql-admin is the default here
-pgroledef apply -f roles.jsonnet
-```
-
-## Supported PostgreSQL versions
-
-PostgreSQL 16, 17 and 18 (and the Aurora PostgreSQL versions based on them).
-`plan` and `apply` read `server_version_num` and refuse anything older than 16.
-
-A declaration may pin the major version it was written for:
-
-```jsonnet
-target: { engine: 'aurora-postgresql', identifier: 'staging-shopfront', postgres_version: 17 },
-```
-
-When pinned, `validate` rejects — offline, without a connection — privileges the
-version does not have, and `plan` / `apply` refuse a server whose major version
-differs. When omitted, the same checks run at `plan` / `apply` time against the
-version the server reports.
-
-The only privilege that currently differs between the supported versions is
-`MAINTAIN` on tables, which PostgreSQL 17 introduced.
-
-## Plan output
-
-When there is a diff, `plan` (and `apply`, before the confirmation prompt)
-prints it twice: first as a diff shaped like the declaration, one block per
-role, then as the SQL that will be executed.
-
-```text
-~ role "grp_viewer"
-  - grants on TABLE app.public.orders:
-      - DELETE
-  + default privileges FOR ROLE migrator IN SCHEMA app.public ON TABLES TO grp_viewer:
-      + SELECT
-
-~ role "migrator"
-  ~ login:     false -> true
-  ~ member_of: [grp_viewer] -> [grp_viewer, rds_iam]
-
-+ role "worker"
-  + login:     true
-  + grants on TABLE app.public.jobs:
-      + INSERT
-      + SELECT
-
-SQL:
-  -- cluster
-  ALTER ROLE "migrator" WITH LOGIN;
-  CREATE ROLE "worker" WITH LOGIN;
-  GRANT "rds_iam" TO "migrator";
-  -- app
-  GRANT INSERT, SELECT ON TABLE "public"."jobs" TO "worker";
-  REVOKE DELETE ON TABLE "public"."orders" FROM "grp_viewer";  -- privilege not declared
-  ALTER DEFAULT PRIVILEGES FOR ROLE "migrator" IN SCHEMA "public" GRANT SELECT ON TABLES TO "grp_viewer";
-
-Plan: 6 statement(s), 1 destructive.
-```
-
-Reading the diff:
-
-- `+ role "x"` the role will be created, `~ role "x"` an existing role changes.
-  Roles appear in declaration order; unchanged roles are not printed.
-- `~ login: false -> true` and `~ member_of: [a] -> [a, b]` show the whole
-  before and after value of a scalar or list attribute.
-- A privilege line names the target (`grants on TABLE app.public.orders`, or
-  `default privileges FOR ROLE ... IN SCHEMA ... ON TABLES TO ...`), followed by
-  the privileges being added (`+`) and removed (`-`). The line's own mark is `+`
-  when only privileges are added, `-` when only removed, `~` when both.
-- Targets in the diff are fully qualified as `database.schema.relation`, matching
-  the identifiers used in the declaration; the SQL below uses quoted PostgreSQL
-  identifiers relative to the database each statement runs in.
-- Schema-wide grants are rendered as one `ALL TABLES IN SCHEMA app.public` entry
-  when the privilege is missing on every relation, as in the SQL.
-- Within a role, privilege lines run from the widest target to the narrowest
-  (database, schema, `ALL ... IN SCHEMA`, relation), with default privileges last.
-
-In the SQL section, statements are grouped by the database they run in
-(`cluster` means the connector's default database), and each statement is
-printed as it will be executed, without a diff mark. Destructive statements
-(REVOKE / NOLOGIN) are shown in red and carry a trailing `--` comment saying why
-they are there.
-
-When nothing differs, the output is a single line:
-
-```text
-No changes. The database matches the declaration.
-```
-
-### Colour
-
-On a terminal both sections are coloured the way `terraform plan` colours its
-own: green for what is added, red for what is removed or destructive, yellow for
-an in-place change, bold for the role and section headings, and dim for the
-`--` comments. The text itself is the same either way, so stripping the colour
-gives back exactly the output shown above.
-
-Colour is off when the output is not a terminal (a pipe, a file, CI logs), when
-`NO_COLOR` is set to anything non-empty, when `TERM=dumb`, or when `plan` /
-`apply` is given `--no-color`. To keep the colour through a pipe anyway — a CI
-log viewer that renders ANSI, say — set `FORCE_COLOR=1` or `CLICOLOR_FORCE=1`;
-`--no-color` and `NO_COLOR` still win over both.
+Two things to know before the first run against a real cluster: `plan` exits
+2 when there is a diff, and `apply` refuses a plan containing REVOKE or
+NOLOGIN unless `--allow-destroy` is given. Every flag and the exit codes are
+in [docs/commands.md](docs/commands.md); the IAM token modes are in
+[docs/aws-iam-auth.md](docs/aws-iam-auth.md).
 
 ## Declaration format
 
@@ -420,21 +130,41 @@ Identifiers are `database.schema` and `database.schema.relation`. Everything a
 role can do lives under that role: its memberships, its grants and the default
 privileges it receives. Object names never appear as keys.
 
+| key | meaning |
+|---|---|
+| `target.engine` | `aurora-postgresql` or `dsql`; picks the dialect, the policy defaults and the validation rules |
+| `policy` | `protected_roles` and `unmanaged_databases` bound what pgroledef will touch; the defaults cover the engine's own roles and databases |
+| `roles[].login` | `LOGIN` / `NOLOGIN`; default `false` |
+| `roles[].member_of` | memberships; `rds_iam` for Aurora IAM authentication |
+| `roles[].iam_principals` | DSQL only: IAM role ARNs mapped with `AWS IAM GRANT` |
+| `roles[].grants[].on` | one of `database`, `schema`, `table`, `sequence`, `all_tables_in_schema`, `all_sequences_in_schema` |
+| `roles[].creates_objects_in` | schemas this role creates objects in; derives `ALTER DEFAULT PRIVILEGES FOR ROLE` |
+
+The full field reference, the privilege matrix per target, engine and
+PostgreSQL version, and the validation rules are in
+[docs/declaration.md](docs/declaration.md).
+
 ### Why `creates_objects_in`
 
 `ALTER DEFAULT PRIVILEGES` only applies to objects created by the role named in
-`FOR ROLE`. Writing that by hand is how tables created by a migration role end
-up without the grants everyone expected. Declaring who creates objects lets
-pgroledef derive every `FOR ROLE` clause from the schema-wide grants of every
-other role, so the mistake cannot be expressed. `render` shows the derived
-entries under each grantee's `default_privileges`.
+`FOR ROLE`, and getting that role wrong is how tables created by a migration
+role end up without the grants everyone expected. Declaring who creates objects
+lets pgroledef derive every `FOR ROLE` clause, so the mistake cannot be
+expressed; the derivation is spelled out in
+[docs/declaration.md](docs/declaration.md#creates_objects_in).
 
-## What is reconciled
+## How it works
 
-For every role declared in the file:
+Every run evaluates the jsonnet, validates it offline, reads the live catalog,
+diffs the two and, for `apply`, runs the resulting SQL. The plan is derived
+from the catalog on every run, never from a state file, so a partially applied
+run is finished by running again.
+
+For every role declared in the file, pgroledef reconciles:
 
 - existence and `LOGIN` / `NOLOGIN`
-- role memberships (`GRANT role TO role`); Aurora IAM authentication is plain membership in `rds_iam`
+- role memberships (`GRANT role TO role`); Aurora IAM authentication is plain
+  membership in `rds_iam`, and on `dsql` the `AWS IAM GRANT` mappings
 - privileges on databases, schemas, tables and sequences, in every database
   not matched by `policy.unmanaged_databases`; undeclared privileges are revoked
 - default privileges where the declared role is the creator or the grantee
@@ -442,37 +172,51 @@ For every role declared in the file:
 Privileges a role holds as the object's owner are left alone. Roles that exist
 on the server but are not declared are not touched (yet).
 
-## Development
+`plan` shows the diff shaped like the declaration, then the SQL it will run:
 
-```bash
-mise run db:up                # pg16, pg17, pg18 on ports 55416 / 55417 / 55418
-mise run test:17              # tests against one version (also test:16, test:18)
-mise run test:all             # tests against all three
-mise run lint
-go test ./internal/config -update   # refresh golden files after reviewing the diff
+```text
+~ role "migrator"
+  ~ login:     false -> true
+  ~ member_of: [grp_viewer] -> [grp_viewer, rds_iam]
+
++ role "worker"
+  + login:     true
+  + grants on TABLE app.public.jobs:
+      + INSERT
+      + SELECT
+
+SQL:
+  -- cluster
+  ALTER ROLE "migrator" WITH LOGIN;
+  CREATE ROLE "worker" WITH LOGIN;
+  GRANT "rds_iam" TO "migrator";
+  -- app
+  GRANT INSERT, SELECT ON TABLE "public"."jobs" TO "worker";
+
+Plan: 4 statement(s), 0 destructive.
 ```
 
-Conventions and the pitfalls worth knowing before changing anything are in
-[AGENTS.md](AGENTS.md).
+Destructive statements (REVOKE / NOLOGIN) are shown in red, and each REVOKE
+carries a comment saying why it is there. Reading the diff in full, and how colour is
+decided, is in [docs/plan-output.md](docs/plan-output.md).
 
-### Release
+## Documentation
 
-Releases are cut by pushing a SemVer tag with a `v` prefix; the `release`
-workflow then cross-compiles with [GoReleaser](https://goreleaser.com/) and
-uploads the archives and `checksums.txt` to the GitHub release.
-
-```bash
-git tag -a v0.1.0 -m v0.1.0
-git push origin v0.1.0
-```
-
-`.goreleaser.yaml` is exercised on every pull request by the `release-dryrun`
-CI job, so configuration mistakes surface before a tag is pushed. To reproduce
-that locally:
-
-```bash
-go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=publish
-```
+- [How it works](docs/how-it-works.md) — the reconciliation model, authority
+  boundaries, destructive statements, transactions and re-runs
+- [Declaration format](docs/declaration.md) — every field, defaults per
+  engine, the privilege matrix, validation rules, jsonnet idioms
+- [Commands](docs/commands.md) — every flag, connection precedence, the
+  password prompt, `plan --out`, environment variables, exit codes
+- [Plan output](docs/plan-output.md) — reading the diff and the SQL, colour
+- [AWS IAM authentication](docs/aws-iam-auth.md) — `--auth rds-iam` / `dsql`
+  / `dsql-admin`, TLS and the RDS CA bundle
+- [Aurora DSQL](docs/aurora-dsql.md) — what DSQL constrains, one transaction
+  per statement, the borrowed membership
+- [Supported PostgreSQL versions](docs/postgres-versions.md) — 16, 17, 18 and
+  `target.postgres_version`
+- [Development](docs/development.md) — local databases, tests, lint, golden
+  files, releases
 
 ## License
 

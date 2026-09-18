@@ -31,6 +31,8 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 - `internal/jsonnetx` — go-jsonnet wrapper
 - `internal/termcolor` — the ANSI palette and the TTY / environment decision
 - `testdata/golden` — byte-compared render output; `testdata/invalid` — `.jsonnet` + `.want` pairs
+- `docs` — user documentation; `README.md` is the short version and links here
+  (the "How it works" list of what is reconciled appears in both; keep them in step)
 
 ## Conventions
 
@@ -53,8 +55,9 @@ Run `mise run test` and `mise run lint` before handing work back. Run
 
 - Golden files: refresh with `go test ./internal/config -update` after reviewing
   the diff. Never hand-edit `testdata/golden/*.json`.
-- `diff_display_test.go` pins the exact diff text, and README's "Plan output"
-  section shows the same output. Changing `WriteDiff` means updating both.
+- `diff_display_test.go` pins the exact diff text, and `docs/plan-output.md`
+  shows the same output (README carries a shorter excerpt). Changing
+  `WriteDiff` means updating all three.
   Colour must only wrap that text: the coloured test strips the escapes and
   compares against the same string, so never fold styling into the wording.
 - Every `testdata/invalid/*.jsonnet` needs a sibling `.want` (substring match).
